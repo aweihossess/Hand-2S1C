@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-05-08 01:03:53",
+  "type": "MCP_DUAL_MOTOR",
+  "motor_count": 2,
+  "mcp_zero_positions": [
+    2048,
+    2048
+  ],
+  "mcp_rope_k_counts_per_mm": [
+    80.0,
+    80.0
+  ],
+  "mcp_encoder_fe_index": 0,
+  "mcp_encoder_aa_index": 1,
+  "description": "MCP双电机零点与绳长比例"
+}

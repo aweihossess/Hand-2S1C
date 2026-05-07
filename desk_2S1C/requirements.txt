@@ -1,0 +1,15 @@
+# 机械手上位机依赖
+# 安装命令: pip install -r requirements.txt
+
+# GUI框架
+PyQt6>=6.4.0
+
+# 串口通信
+pyserial>=3.5
+
+# 数值计算
+numpy>=1.23.0
+
+# 可选：用于数据可视化
+# matplotlib>=3.6.0
+# pyqtgraph>=0.13.0
