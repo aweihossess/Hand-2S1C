@@ -128,7 +128,6 @@ class HandController:
         self.update_callbacks: List[Callable[[HandModel], None]] = []
         
         # 控制参数
-        self._pid_enabled = False
         self._paused = False
         self._control_mode = ControlMode.JOINT_ANGLE
         self._started = False
@@ -137,20 +136,23 @@ class HandController:
         self._update_thread: Optional[threading.Thread] = None
     
     def set_control_mode(self, mode: ControlMode):
-        """设置控制模式"""
+        """设置控制模式（切换关节模式时会下发 CMD_ANGLE_CTRL，否则下位机仍停留在直控等旧模式）。"""
         self._control_mode = mode
+        if self._paused or not self.comm:
+            return
+        if mode == ControlMode.JOINT_ANGLE:
+            with self.state_lock:
+                angles = self._validate_angles(list(self.current_state.target_angles))
+                self.current_state.set_target_angles(angles)
+            self.comm.send_command(("angle_live", angles))
     
     def get_control_mode(self) -> ControlMode:
         """获取当前控制模式"""
         return self._control_mode
     
-    def set_pid_control(self, enabled: bool):
-        """设置PID控制使能"""
-        self._pid_enabled = enabled
-    
-    def is_pid_enabled(self) -> bool:
-        """检查PID是否使能"""
-        return self._pid_enabled
+    def _rope_pd_easy_notify_predicate(self) -> bool:
+        """关节角度模式且已 START 时，允许 comm 在首帧有效 E0/E1 上简易触发绳长 PD 提示。"""
+        return bool(self._started) and self._control_mode == ControlMode.JOINT_ANGLE
     
     def pause(self):
         """暂停发送控制指令"""
@@ -169,13 +171,17 @@ class HandController:
         self._paused = not self._paused
         return self._paused
     
-    def initialize(self, comm_port: str) -> bool:
+    def initialize(self, comm_port: str, serial_notify: Optional[Callable[[str], None]] = None) -> bool:
         """
         初始化控制器并连接串口
         返回是否成功
         """
         try:
-            self.comm = LowerComputerComm(comm_port)
+            self.comm = LowerComputerComm(
+                comm_port,
+                serial_notify=serial_notify,
+                rope_pd_easy_notify=self._rope_pd_easy_notify_predicate,
+            )
         except (ValueError, RuntimeError) as exc:
             print(f"连接失败: {exc}")
             return False
@@ -269,13 +275,22 @@ class HandController:
         if self._paused:
             return
         if self.comm:
+            self.comm.reset_mcp_rope_pd_message_gate()
             self.comm.send_command("start")
             self._started = True
+            # 下位机在 control_enabled=0 时不会下发关节跟踪；若此前只在未 START 时发过角度，
+            # 或队列顺序导致目标未与 START 对齐，这里在 START 之后再发一帧当前目标，避免「启了但不跟」。
+            if self._control_mode == ControlMode.JOINT_ANGLE:
+                angles = self._validate_angles(list(self.get_target_angles()))
+                with self.state_lock:
+                    self.current_state.set_target_angles(angles)
+                self.comm.send_command(("angle_live", list(angles)))
     
     def stop(self):
         """停止控制"""
         if self.comm:
             self.comm.send_command("stop")
+            self.comm.reset_mcp_rope_pd_message_gate()
         self._started = False
     
     def reset(self):
@@ -284,6 +299,7 @@ class HandController:
             return
         if self.comm:
             self.comm.send_command("reset")
+            self.comm.reset_mcp_rope_pd_message_gate()
         self._started = False
         
         # 重置目标角度
@@ -434,22 +450,6 @@ class HandController:
         
         self.comm.send_command(("tendon_guard", list(configs)))
     
-    def set_pid_params(self, outer_params: List[float], inner_params: List[float]):
-        """
-        设置双环PID参数
-        参数顺序: kp, ki, kd, deadband, integral_limit, output_limit
-        """
-        if not self.comm:
-            return
-        
-        if len(outer_params) != 6 or len(inner_params) != 6:
-            raise ValueError("外环和内环PID参数都需要6个值")
-        
-        self.comm.send_command(("pid_params", (
-            [float(v) for v in outer_params],
-            [float(v) for v in inner_params]
-        )))
-    
     def apply_pose(self, pose: HandPose) -> bool:
         """
         应用预设手势
@@ -462,28 +462,40 @@ class HandController:
         self.set_target_angles(target_angles)
         return True
     
-    def set_encoder_zeros(self, zero_raw_list: List[int]):
+    def set_encoder_zeros(
+        self,
+        zero_raw_list: List[int],
+        mechanism_motor_abs: Optional[List[int]] = None,
+    ):
         """
-        设置磁编码器零点
-        将零点数据保存并下发到下位机
-        
-        Args:
-            zero_raw_list: 21路编码器的零点原始值列表
+        设置磁编码器零点，并下发到下位机（含 NVS 持久化）。
+        同时可把当前机构零点对应的多圈电机绝对位置写入下位机（与 0x03 遥测 int32 一致）。
+
+        mechanism_motor_abs 缺省时使用当前状态中的 servo_angles（需已收到遥测）；不足则用 0 填充。
         """
         if not self.comm:
             raise RuntimeError("未连接到设备")
-        
+
         if len(zero_raw_list) != ENCODER_COUNT:
             raise ValueError(f"需要提供 {ENCODER_COUNT} 个零点值")
-        
-        # 保存到当前状态
+
         with self.state_lock:
             self.current_state.set_encoder_zeros(zero_raw_list)
-        
-        # 下发到下位机
-        self.comm.send_command(("calib_data", list(zero_raw_list)))
-        
-        print(f"[标定] 已设置 {ENCODER_COUNT} 路编码器零点")
+            if mechanism_motor_abs is None:
+                sa = list(self.current_state.servo_angles)
+                if len(sa) < MOTOR_COUNT:
+                    sa = sa + [0] * (MOTOR_COUNT - len(sa))
+                mechanism_motor_abs = sa[:MOTOR_COUNT]
+
+        if len(mechanism_motor_abs) != MOTOR_COUNT:
+            raise ValueError(f"机构零点电机位置需要 {MOTOR_COUNT} 个值")
+
+        self.comm.send_command(("calib_data", list(zero_raw_list), list(mechanism_motor_abs)))
+
+        if not any(int(x) != 0 for x in mechanism_motor_abs):
+            print("[标定] 提示: 当前电机多圈位置全为 0，若尚未收到 0x03 遥测，机构零点可能未正确记录；请稍等再应用标定")
+
+        print(f"[标定] 已下发 {ENCODER_COUNT} 路磁编零点 + {MOTOR_COUNT} 路机构零点电机 abs 到下位机")
     
     def send_raw_command(self, cmd: str):
         """
@@ -535,7 +547,6 @@ class HandController:
                 'started': self._started,
                 'paused': self._paused,
                 'control_mode': self._control_mode.name,
-                'pid_enabled': self._pid_enabled,
                 'calib_status': self.current_state.calib_status,
                 # 编码器数据 (来自S3 CAN总线)
                 'encoder_raw': encoder_raw,

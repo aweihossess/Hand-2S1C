@@ -16,8 +16,8 @@ grandparent_dir = os.path.dirname(parent_dir)
 if grandparent_dir not in sys.path:
     sys.path.insert(0, grandparent_dir)
 
-# 零点配置文件路径
-ZERO_CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "zero_config.json")
+# 磁编码器零点持久化文件（desk_2S1C 目录下）
+ZERO_CONFIG_FILE = os.path.join(parent_dir, "zero_config.json")
 
 # MCP 滑块机械限位（与机构 MCP 屈伸/展收范围一致，度）
 # FE：伸展约 22°–26°（取 -26）、屈曲约 84°–87°（取 +87）；AA：总行程约 25°–30°（±15）
@@ -187,13 +187,14 @@ class EncoderIndicator(QFrame):
 
 
 class ServoIndicator(QFrame):
-    """舵机状态指示器 - 显示位置、速度、负载(电流)、电压、温度"""
+    """舵机状态指示器：Pos=最近下发的多圈绝对指令；Pos_fb=0x03 多圈反馈 + 遥测。"""
     
     def __init__(self, servo_id: int, parent=None):
         super().__init__(parent)
         self.servo_id = servo_id
         self.online = False
-        self.position = 0
+        self.target_position: Optional[int] = None  # 最近一次已下发指令；None=尚未下发
+        self.feedback_position = 0
         self.speed = 0
         self.load = 0
         self.voltage = 0.0
@@ -202,8 +203,8 @@ class ServoIndicator(QFrame):
     
     def setup_ui(self):
         self.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
-        self.setMinimumSize(90, 140)
-        self.setMaximumWidth(110)
+        self.setMinimumSize(90, 168)
+        self.setMaximumWidth(120)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(3, 3, 3, 3)
@@ -221,11 +222,19 @@ class ServoIndicator(QFrame):
         self.status_label.setFont(QFont("Arial", 12))
         layout.addWidget(self.status_label)
         
-        # 位置显示
+        # 上位机最近一次下发（非滑块草稿）
         self.pos_label = QLabel("Pos: 0")
         self.pos_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.pos_label.setFont(QFont("Arial", 8))
+        self.pos_label.setToolTip("最近一次已下发的多圈绝对目标位置 (CMD_MOTOR_POS_ABS)")
         layout.addWidget(self.pos_label)
+        
+        # 下位机多圈绝对反馈（与 Pos 同量纲）
+        self.pos_fb_label = QLabel("Pos_fb: 0")
+        self.pos_fb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pos_fb_label.setFont(QFont("Arial", 8))
+        self.pos_fb_label.setToolTip("下位机 0x03 多圈绝对位置（与 CMD_MOTOR_POS_ABS 同量纲）")
+        layout.addWidget(self.pos_fb_label)
         
         # 速度显示
         self.speed_label = QLabel("Spd: 0")
@@ -253,10 +262,11 @@ class ServoIndicator(QFrame):
         
         self.update_display()
     
-    def update_status(self, online: bool, position: int, speed: int = 0, 
-                     load: int = 0, voltage: float = 0.0, temperature: int = 0):
+    def update_status(self, online: bool, target_pos: Optional[int], feedback_pos: int,
+                     speed: int = 0, load: int = 0, voltage: float = 0.0, temperature: int = 0):
         self.online = online
-        self.position = position
+        self.target_position = target_pos
+        self.feedback_position = int(feedback_pos)
         self.speed = speed
         self.load = load
         self.voltage = voltage
@@ -271,7 +281,11 @@ class ServoIndicator(QFrame):
             self.status_label.setStyleSheet("color: #f44336;")  # 红色
         
         # 更新各数值显示
-        self.pos_label.setText(f"Pos: {self.position}")
+        if self.target_position is None:
+            self.pos_label.setText("Pos: —")
+        else:
+            self.pos_label.setText(f"Pos: {self.target_position}")
+        self.pos_fb_label.setText(f"Pos_fb: {self.feedback_position}")
         self.speed_label.setText(f"Spd: {self.speed}")
         self.load_label.setText(f"Load: {self.load}")
         self.voltage_label.setText(f"V: {self.voltage:.1f}V")
@@ -370,6 +384,8 @@ class MotorSlider(QWidget):
         layout.setContentsMargins(2, 1, 2, 1)
         layout.setSpacing(4)
         
+        init_val = 0 if self.min_val <= 0 <= self.max_val else self.min_val
+        
         # ID标签
         self.id_label = QLabel(f"M{self.motor_id:02d}")
         self.id_label.setMinimumWidth(40)
@@ -388,7 +404,7 @@ class MotorSlider(QWidget):
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setMinimum(self.min_val)
         self.slider.setMaximum(self.max_val)
-        self.slider.setValue(2048)
+        self.slider.setValue(init_val)
         self.slider.valueChanged.connect(self.on_slider_changed)
         layout.addWidget(self.slider, 1)
         
@@ -403,7 +419,7 @@ class MotorSlider(QWidget):
         # 数值输入
         self.spin = QSpinBox()
         self.spin.setRange(self.min_val, self.max_val)
-        self.spin.setValue(2048)
+        self.spin.setValue(init_val)
         self.spin.setMinimumWidth(60)
         self.spin.setMaximumWidth(70)
         self.spin.valueChanged.connect(self.on_spin_changed)
@@ -444,6 +460,7 @@ class MotorSlider(QWidget):
         self.spin.setValue(value)
         self.slider.blockSignals(False)
         self.spin.blockSignals(False)
+        self.value_changed.emit(self.motor_id, value)
     
     def get_value(self) -> int:
         return self.spin.value()
@@ -473,9 +490,8 @@ class MainWindow(QMainWindow):
         
         self.setup_ui()
         self.setup_status_bar()
-        
-        # 自动加载零点配置（如果存在）
-        self.auto_load_zero_config()
+
+        self._auto_load_encoder_zero_config()
 
         # 自动加载MCP零点配置
         self._load_mcp_zero_config()
@@ -615,11 +631,6 @@ class MainWindow(QMainWindow):
         self.reset_btn.setEnabled(False)
         layout.addWidget(self.reset_btn, 2, 1, 1, 2)
         
-        # PID使能
-        self.pid_checkbox = QCheckBox("启用PID控制")
-        self.pid_checkbox.stateChanged.connect(self.on_pid_changed)
-        layout.addWidget(self.pid_checkbox, 3, 0, 1, 3)
-        
         parent_layout.addWidget(group)
     
     def setup_calibration_group(self, parent_layout):
@@ -651,26 +662,6 @@ class MainWindow(QMainWindow):
         self.apply_calib_btn.clicked.connect(self.on_apply_calibration_clicked)
         self.apply_calib_btn.setEnabled(False)
         layout.addWidget(self.apply_calib_btn, 1, 1)
-        
-        # 第二行按钮
-        # 保存配置按钮
-        self.save_calib_btn = QPushButton("💾 保存配置")
-        self.save_calib_btn.setToolTip("保存当前零点到文件")
-        self.save_calib_btn.clicked.connect(self.on_save_calibration_clicked)
-        self.save_calib_btn.setEnabled(False)
-        layout.addWidget(self.save_calib_btn, 2, 0)
-        
-        # 加载配置按钮
-        self.load_calib_btn = QPushButton("📂 加载配置")
-        self.load_calib_btn.setToolTip("从文件加载零点配置")
-        self.load_calib_btn.clicked.connect(self.on_load_calibration_clicked)
-        layout.addWidget(self.load_calib_btn, 2, 1)
-        
-        # 零点数据预览
-        self.zero_preview_label = QLabel("零点数据: 无")
-        self.zero_preview_label.setStyleSheet("color: gray; font-size: 9px;")
-        self.zero_preview_label.setWordWrap(True)
-        layout.addWidget(self.zero_preview_label, 3, 0, 1, 2)
         
         parent_layout.addWidget(group)
     
@@ -737,7 +728,10 @@ class MainWindow(QMainWindow):
         
         self.mcp_apply_btn = QPushButton("应用 Fe/AA 位置（与滑块实时一致，用于立即确认）")
         self.mcp_apply_btn.setEnabled(False)
-        self.mcp_apply_btn.setToolTip("按有效绳长模型计算 M00/M01 目标并发送 CMD_MOTOR_POS_ABS")
+        self.mcp_apply_btn.setToolTip(
+            "关节角度模式：发送 21 路目标角（CMD_ANGLE_CTRL），Fe/AA 写入配置中的磁编关节索引；"
+            "电机直控模式：按绳长模型发 CMD_MOTOR_POS_ABS（会切下位机为直控）。"
+        )
         self.mcp_apply_btn.clicked.connect(self.on_mcp_apply_clicked)
         layout.addWidget(self.mcp_apply_btn, 6, 0, 1, 3)
         
@@ -778,7 +772,7 @@ class MainWindow(QMainWindow):
         # 创建舵机指示器
         motor_scroll = QScrollArea()
         motor_scroll.setWidgetResizable(True)
-        motor_scroll.setMaximumHeight(280)
+        motor_scroll.setMaximumHeight(320)
         motor_content = QWidget()
         motor_layout = QVBoxLayout(motor_content)
         
@@ -808,10 +802,11 @@ class MainWindow(QMainWindow):
         motor_scroll.setWidget(motor_content)
         layout.addWidget(motor_scroll)
         
-        # 舵机状态栏
+        # 舵机状态栏（含各电机当前反馈位置）
         self.servo_status_label = QLabel("电机状态: 等待数据...")
         self.servo_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.servo_status_label.setStyleSheet("color: gray;")
+        self.servo_status_label.setWordWrap(True)
+        self.servo_status_label.setStyleSheet("color: #333; font-size: 10px;")
         layout.addWidget(self.servo_status_label)
         
         # 分隔线
@@ -895,7 +890,8 @@ class MainWindow(QMainWindow):
         
         # 说明
         info = QLabel(
-            "直接控制22路电机位置 (0-4095 单圈 / -30719~30719 多圈绝对)。"
+            "22 路电机均为多圈绝对位置（与下位机 CMD_MOTOR_POS_ABS 一致，范围 "
+            f"{MOTOR_ABS_CMD_MIN}～{MOTOR_ABS_CMD_MAX}）。"
             "发令时会自动切到「电机直控模式」。拖动滑块请勾选「启用实时」，否则点「发送全部电机位置」。"
         )
         info.setWordWrap(True)
@@ -919,17 +915,16 @@ class MainWindow(QMainWindow):
         
         mode_layout.addStretch()
         
-        # 绝对位置复选框
-        self.abs_pos_checkbox = QCheckBox("使用多圈绝对位置模式")
-        self.abs_pos_checkbox.stateChanged.connect(self.on_abs_mode_changed)
-        mode_layout.addWidget(self.abs_pos_checkbox)
+        mode_hint = QLabel(f"多圈绝对 ({MOTOR_ABS_CMD_MIN}～{MOTOR_ABS_CMD_MAX})")
+        mode_hint.setStyleSheet("color: #666; font-size: 10px;")
+        mode_layout.addWidget(mode_hint)
         
         motor_layout.addLayout(mode_layout)
         
         # 电机滑块
         self.motor_sliders: List[MotorSlider] = []
         for i in range(MOTOR_COUNT):
-            slider = MotorSlider(i, 0, 4095)
+            slider = MotorSlider(i, MOTOR_ABS_CMD_MIN, MOTOR_ABS_CMD_MAX)
             slider.value_changed.connect(self.on_motor_value_changed)
             slider.fine_adjust.connect(self.on_motor_fine_adjust)
             self.motor_sliders.append(slider)
@@ -937,7 +932,7 @@ class MainWindow(QMainWindow):
         
         motor_btn_layout = QHBoxLayout()
         
-        self.center_all_btn = QPushButton("全部置中 (2048)")
+        self.center_all_btn = QPushButton("全部置中 (M00/M01=记录零点, 其余=0)")
         self.center_all_btn.clicked.connect(self.on_center_all_clicked)
         motor_btn_layout.addWidget(self.center_all_btn)
         
@@ -954,7 +949,9 @@ class MainWindow(QMainWindow):
         # 实时模式标志
         self.motor_live_mode = False
         # 用于存储各电机当前值（实时模式用）
-        self.motor_live_values = [2048] * MOTOR_COUNT
+        self.motor_live_values = [0] * MOTOR_COUNT
+        # 最近一次已成功下发到下位机的各电机指令（多圈绝对，与 Pos 一致）
+        self._last_sent_motor_cmd: List[Optional[int]] = [None] * MOTOR_COUNT
         # 发送定时器（用于批量发送，减少通信频率）
         self.motor_live_timer = QTimer()
         self.motor_live_timer.timeout.connect(self._send_motor_live_batch)
@@ -974,9 +971,6 @@ class MainWindow(QMainWindow):
         # 显示信息
         self.mode_status_label = QLabel("模式: 关节角度")
         self.status_bar.addPermanentWidget(self.mode_status_label)
-        
-        self.pid_status_label = QLabel("PID: 关闭")
-        self.status_bar.addPermanentWidget(self.pid_status_label)
     
     def refresh_ports(self):
         """刷新串口列表"""
@@ -995,6 +989,85 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.port_combo.setCurrentIndex(idx)
     
+    def _auto_load_encoder_zero_config(self) -> None:
+        """启动时从 zero_config.json 加载磁编零点。"""
+        try:
+            if not os.path.exists(ZERO_CONFIG_FILE):
+                self.log("ℹ 未找到磁编零点配置文件 zero_config.json，请连接设备后标定")
+                return
+            with open(ZERO_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            loaded_zeros = config.get('zero_raw_values', [])
+            timestamp = config.get('timestamp', '')
+            if len(loaded_zeros) != ENCODER_COUNT:
+                self.log(
+                    f"⚠ 磁编零点文件路数不符（文件 {len(loaded_zeros)}，需要 {ENCODER_COUNT}），已忽略"
+                )
+                return
+            self.current_zero_raw = [int(v) for v in loaded_zeros]
+            ts_disp = timestamp if timestamp else "本地文件"
+            self.calib_status_label.setText(f"状态: 已加载 ({ts_disp})")
+            self.calib_status_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+            self.apply_calib_btn.setEnabled(True)
+            self.log(f"✓ 已自动加载磁编零点（{ts_disp}），连接设备后将尝试下发到下位机")
+        except Exception as e:
+            self.log(f"⚠ 加载磁编零点配置失败: {e}")
+    
+    def _auto_save_encoder_zero_config(self) -> None:
+        """将当前 current_zero_raw 写入 zero_config.json。"""
+        if not hasattr(self, 'current_zero_raw') or not self.current_zero_raw:
+            return
+        if len(self.current_zero_raw) != ENCODER_COUNT:
+            return
+        try:
+            config = {
+                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
+                'encoder_count': ENCODER_COUNT,
+                'zero_raw_values': list(self.current_zero_raw),
+                'description': '磁编码器零点配置（自动保存）',
+            }
+            with open(ZERO_CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            self.log(f"✓ 磁编零点已保存: {ZERO_CONFIG_FILE}")
+        except Exception as e:
+            self.log(f"⚠ 保存磁编零点失败: {e}")
+    
+    def _push_loaded_encoder_calib_to_device(self, reason: str = "") -> None:
+        """
+        将已加载的磁编零点 + 当前遥测中的多圈电机位置通过 CMD_CALIB_DATA 发到 ESP32。
+        绳长 PD 需要下位机同时置位 calib_zero_raw_valid 与 mechanism_zero_motor_valid；
+        机构零点必须是「当前 0x03 遥测」中的 M00..M21，连接后须等遥测到达再下发（见延迟调用）。
+        """
+        if not self.controller.is_connected():
+            return
+        if not hasattr(self, "current_zero_raw") or not self.current_zero_raw:
+            return
+        if len(self.current_zero_raw) != ENCODER_COUNT:
+            return
+        tag = f" ({reason})" if reason else ""
+        try:
+            with self.controller.state_lock:
+                has_sa = bool(self.controller.current_state.has_servo_angle_data)
+                sa0 = (
+                    list(self.controller.current_state.servo_angles)
+                    if has_sa
+                    else []
+                )
+            if not has_sa:
+                self.log(f"⚠ 尚未收到舵机 0x03 遥测，跳过本次标定下发{tag}（稍后会自动重试）")
+                return
+            self.controller.set_encoder_zeros(self.current_zero_raw)
+            self.calib_status_label.setText("状态: 已应用")
+            self.calib_status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            m0 = int(sa0[0]) if len(sa0) > 0 else 0
+            m1 = int(sa0[1]) if len(sa0) > 1 else 0
+            self.log(
+                f"✓ 标定数据已下发{tag}：磁编零点 {ENCODER_COUNT} 路 + 机构电机 abs"
+                f"（当前遥测 M00={m0}, M01={m1}）"
+            )
+        except Exception as e:
+            self.log(f"⚠ 下发标定数据失败{tag}: {e}")
+    
     def log(self, message: str):
         """添加日志"""
         timestamp = time.strftime("%H:%M:%S")
@@ -1002,6 +1075,11 @@ class MainWindow(QMainWindow):
         # 滚动到底部
         scrollbar = self.log_output.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+    
+    def _record_last_motor_command(self, positions: List[int]) -> None:
+        """成功下发多圈绝对电机指令后更新缓存，供 Pos 显示。"""
+        for i in range(min(MOTOR_COUNT, len(positions))):
+            self._last_sent_motor_cmd[i] = int(positions[i])
     
     # ===== 事件处理 =====
     
@@ -1042,6 +1120,7 @@ class MainWindow(QMainWindow):
             for slider in self.motor_sliders:
                 slider.set_enabled(False)
             
+            self._last_sent_motor_cmd = [None] * MOTOR_COUNT
             self.log("已断开连接")
             self.status_bar.showMessage("已断开")
             
@@ -1057,7 +1136,11 @@ class MainWindow(QMainWindow):
             
             self.log(f"正在连接 {port}...")
             
-            if self.controller.initialize(port):
+            def _serial_notify(msg: str) -> None:
+                QTimer.singleShot(0, lambda m=msg: self.log(m))
+            
+            if self.controller.initialize(port, serial_notify=_serial_notify):
+                self._last_sent_motor_cmd = [None] * MOTOR_COUNT
                 self.connect_btn.setText("断开")
                 self.connect_btn.setStyleSheet(
                     "QPushButton { background-color: #f44336; color: white; padding: 8px; }"
@@ -1082,18 +1165,12 @@ class MainWindow(QMainWindow):
                 for slider in self.motor_sliders:
                     slider.set_enabled(True)
                 
-                # 如果已有零点数据（从文件加载的），自动下发到下位机
-                if hasattr(self, 'current_zero_raw') and self.current_zero_raw:
-                    try:
-                        self.controller.set_encoder_zeros(self.current_zero_raw)
-                        self.log(f"✓ 已自动下发零点到下位机（共{ENCODER_COUNT}路）")
-                        self.calib_status_label.setText("状态: 已应用（自动）")
-                        self.calib_status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
-                    except Exception as e:
-                        self.log(f"⚠ 自动下发零点失败: {str(e)}")
-                        self.apply_calib_btn.setEnabled(True)
-                    
-                    self.save_calib_btn.setEnabled(True)
+                # 已加载的磁编零点：立即尝试下发；并延迟重试以便先收到 0x03（机构零点需要真实多圈 abs）
+                if hasattr(self, "current_zero_raw") and self.current_zero_raw:
+                    self._push_loaded_encoder_calib_to_device("连接后即时")
+                    QTimer.singleShot(400, lambda: self._push_loaded_encoder_calib_to_device("0.4s"))
+                    QTimer.singleShot(1500, lambda: self._push_loaded_encoder_calib_to_device("1.5s"))
+                    QTimer.singleShot(3500, lambda: self._push_loaded_encoder_calib_to_device("3.5s"))
                 
                 self.log(f"已连接到 {port}")
                 self.status_bar.showMessage(f"已连接: {port}")
@@ -1134,16 +1211,12 @@ class MainWindow(QMainWindow):
         
         if mode == ControlMode.JOINT_ANGLE:
             self.mode_status_label.setText("模式: 关节角度")
+            if self.controller.is_connected():
+                self.log("关节模式：已下发 CMD_ANGLE_CTRL（同步当前目标角到下位机）")
         else:
             self.mode_status_label.setText("模式: 电机直控")
         
         self.log(f"切换到{self.mode_combo.currentText()}")
-    
-    def on_pid_changed(self, state):
-        """PID使能改变"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.controller.set_pid_control(enabled)
-        self.pid_status_label.setText(f"PID: {'开启' if enabled else '关闭'}")
     
     def on_pose_clicked(self, pose: HandPose):
         """预设手势按钮点击"""
@@ -1198,7 +1271,6 @@ class MainWindow(QMainWindow):
     def on_motor_value_changed(self, motor_id: int, value: int):
         """电机滑块值改变"""
         self.motor_live_values[motor_id] = value
-        # 实时模式下立即发令（需已连接且为电机直控模式，由发送路径保证）
         if self.motor_live_mode and self.controller.is_connected():
             if not self.motor_live_timer.isActive():
                 self.motor_live_timer.start(50)  # 50ms后批量发送
@@ -1222,10 +1294,8 @@ class MainWindow(QMainWindow):
                 # 构建单个电机的位置列表（只改变这个电机）
                 positions = [self.motor_sliders[i].get_value() for i in range(MOTOR_COUNT)]
                 self._ensure_direct_motor_mode_for_motor_panel()
-                if self.abs_pos_checkbox.isChecked():
-                    self.controller.set_motor_positions_absolute(positions)
-                else:
-                    self.controller.set_motor_positions_raw(positions)
+                self.controller.set_motor_positions_absolute(positions)
+                self._record_last_motor_command(positions)
                 
                 direction = "顺时针/拉紧" if delta > 0 else "逆时针/放松"
                 self.log(f"M{motor_id:02d} {direction} {abs(delta)}步")
@@ -1267,11 +1337,8 @@ class MainWindow(QMainWindow):
             # 获取所有电机当前值
             positions = self.motor_live_values.copy()
             
-            # 根据模式发送
-            if self.abs_pos_checkbox.isChecked():
-                self.controller.set_motor_positions_absolute(positions)
-            else:
-                self.controller.set_motor_positions_raw(positions)
+            self.controller.set_motor_positions_absolute(positions)
+            self._record_last_motor_command(positions)
             
         except Exception as e:
             self.log(f"⚠ 实时发送失败: {str(e)}")
@@ -1282,15 +1349,12 @@ class MainWindow(QMainWindow):
         self.motor_live_values = list(positions)
         self._ensure_direct_motor_mode_for_motor_panel()
         
-        if self.abs_pos_checkbox.isChecked():
-            self.controller.set_motor_positions_absolute(positions)
-            self.log("电机绝对位置已发送")
-        else:
-            self.controller.set_motor_positions_raw(positions)
-            self.log("电机原始位置已发送")
+        self.controller.set_motor_positions_absolute(positions)
+        self.log("电机多圈绝对位置已发送")
+        self._record_last_motor_command(positions)
     
     def on_center_all_clicked(self):
-        """全部置中 - M00/M01使用记录的零点，其他电机使用2048"""
+        """全部置中 - M00/M01 使用记录的 MCP 零点，其余电机为 0（多圈绝对）"""
         for i, slider in enumerate(self.motor_sliders):
             if i == 0:  # M00
                 zero_pos = self.mcp_zero_positions[0]
@@ -1298,24 +1362,10 @@ class MainWindow(QMainWindow):
             elif i == 1:  # M01
                 zero_pos = self.mcp_zero_positions[1]
                 slider.set_value(zero_pos)
-            else:  # 其他电机使用2048
-                slider.set_value(2048)
-        self.on_send_motor_clicked()
-        self.log(f"所有电机已置中 (M00={self.mcp_zero_positions[0]}, M01={self.mcp_zero_positions[1]}, 其他=2048)")
-    
-    def on_abs_mode_changed(self, state):
-        """绝对位置模式改变"""
-        is_abs = state == Qt.CheckState.Checked.value
-        
-        for slider in self.motor_sliders:
-            if is_abs:
-                slider.slider.setRange(-30719, 30719)
-                slider.spin.setRange(-30719, 30719)
-                slider.set_value(0)
             else:
-                slider.slider.setRange(0, 4095)
-                slider.spin.setRange(0, 4095)
-                slider.set_value(2048)
+                slider.set_value(0)
+        self.on_send_motor_clicked()
+        self.log(f"所有电机已置中 (M00={self.mcp_zero_positions[0]}, M01={self.mcp_zero_positions[1]}, 其余=0)")
     
     def on_hand_model_updated(self, model: HandModel):
         """手部数据模型更新回调"""
@@ -1338,23 +1388,32 @@ class MainWindow(QMainWindow):
         avg_voltage = sum(servo_voltage) / len(servo_voltage) / 10.0 if servo_voltage else 0
         max_temp = max(servo_temperature) if servo_temperature else 0
         
+        pos_parts = [
+            f"M{i:02d}={int(servo_angles[i]) if i < len(servo_angles) else 0}"
+            for i in range(MOTOR_COUNT)
+        ]
+        pos_line = " ".join(pos_parts)
         self.servo_status_label.setText(
             f"电机在线: {online_count}/{MOTOR_COUNT} | "
-            f"平均电压: {avg_voltage:.1f}V | "
-            f"最高温度: {max_temp}°C"
+            f"平均电压: {avg_voltage:.1f}V | 最高温度: {max_temp}°C\n"
+            f"反馈(多圈绝对): {pos_line}"
         )
         
-        # 更新舵机指示器（包含遥测数据）
+        # 更新舵机指示器：Pos=最近一次多圈绝对指令，Pos_fb=同量纲反馈 + 遥测
         for i in range(min(MOTOR_COUNT, len(self.servo_indicators))):
             online = servo_online[i] if i < len(servo_online) else False
-            angle = servo_angles[i] if i < len(servo_angles) else 0
+            last_cmd = (
+                self._last_sent_motor_cmd[i]
+                if i < len(self._last_sent_motor_cmd)
+                else None
+            )
+            fb = int(servo_angles[i]) if i < len(servo_angles) else 0
             speed = servo_speed[i] if i < len(servo_speed) else 0
             load = servo_load[i] if i < len(servo_load) else 0
             voltage = (servo_voltage[i] / 10.0) if i < len(servo_voltage) else 0.0
             temp = servo_temperature[i] if i < len(servo_temperature) else 0
-            
             self.servo_indicators[i].update_status(
-                online, angle, speed, load, voltage, temp
+                online, last_cmd, fb, speed, load, voltage, temp
             )
         
         # ===== 更新编码器状态 (来自S3 CAN总线) =====
@@ -1453,25 +1512,16 @@ class MainWindow(QMainWindow):
         self.calib_status_label.setText("状态: 已记录零点")
         self.calib_status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
         
-        # 显示零点数据预览（转换后的值）
-        preview = ", ".join([f"E{i}={v}" for i, v in enumerate(self.current_zero_raw[:5])])
-        self.zero_preview_label.setText(f"零点数据: {preview}... (共{ENCODER_COUNT}个)")
-        
-        # 启用应用和保存按钮
         self.apply_calib_btn.setEnabled(True)
-        self.save_calib_btn.setEnabled(True)
-        
-        # 自动保存配置
-        self.auto_save_zero_config()
         
         self.log(f"✓ 零点标定完成 - 记录了 {ENCODER_COUNT} 路编码器零点（已归一化到0-16383）")
-        self.log(f"  配置已自动保存，下次启动时将自动加载")
+        self._auto_save_encoder_zero_config()
         
         QMessageBox.information(self, "标定完成", 
             f"已成功记录 {ENCODER_COUNT} 路编码器零点\n"
             f"转换后的零点值已归一化到0-16383范围\n"
-            f"点击【应用零点】下发到下位机\n"
-            f"配置已自动保存到文件，下次启动自动加载")
+            f"已保存到 zero_config.json，下次启动将自动加载\n"
+            f"点击【应用零点】下发到下位机")
     
     def on_apply_calibration_clicked(self):
         """应用零点 - 将零点数据下发到下位机"""
@@ -1485,6 +1535,7 @@ class MainWindow(QMainWindow):
         
         # 通过控制器设置零点（同时更新上位机状态和下位机）
         self.controller.set_encoder_zeros(self.current_zero_raw)
+        self._auto_save_encoder_zero_config()
         
         self.log(f"零点数据已应用 - 下发到下位机并更新本地状态")
         self.calib_status_label.setText("状态: 已应用")
@@ -1494,102 +1545,6 @@ class MainWindow(QMainWindow):
             "零点数据已下发到下位机\n"
             "当前位置已被设为零点（所有角度应显示为0或接近0）\n"
             "如果角度不为0，请检查编码器数据是否正常接收")
-    
-    def on_save_calibration_clicked(self):
-        """保存零点配置到文件"""
-        if not hasattr(self, 'current_zero_raw') or not self.current_zero_raw:
-            QMessageBox.warning(self, "警告", "没有可保存的零点数据")
-            return
-        
-        from PyQt6.QtWidgets import QFileDialog
-        import json
-        
-        filename, _ = QFileDialog.getSaveFileName(
-            self,
-            "保存零点配置",
-            "encoder_zero_config.json",
-            "JSON文件 (*.json);;所有文件 (*.*)"
-        )
-        
-        if filename:
-            try:
-                config = {
-                    'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
-                    'encoder_count': ENCODER_COUNT,
-                    'zero_raw_values': self.current_zero_raw,
-                    'description': '磁编码器零点配置'
-                }
-                
-                with open(filename, 'w', encoding='utf-8') as f:
-                    json.dump(config, f, indent=2, ensure_ascii=False)
-                
-                self.log(f"零点配置已保存到: {filename}")
-                QMessageBox.information(self, "保存成功", f"配置已保存到:\n{filename}")
-            except Exception as e:
-                QMessageBox.critical(self, "保存失败", f"错误: {str(e)}")
-    
-    def on_load_calibration_clicked(self):
-        """从文件加载零点配置"""
-        from PyQt6.QtWidgets import QFileDialog
-        import json
-        
-        filename, _ = QFileDialog.getOpenFileName(
-            self,
-            "加载零点配置",
-            "",
-            "JSON文件 (*.json);;所有文件 (*.*)"
-        )
-        
-        if filename:
-            try:
-                with open(filename, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                
-                loaded_zeros = config.get('zero_raw_values', [])
-                
-                if len(loaded_zeros) != ENCODER_COUNT:
-                    QMessageBox.warning(self, "配置错误", 
-                        f"配置文件中编码器数量不匹配\n文件: {len(loaded_zeros)}, 需要: {ENCODER_COUNT}")
-                    return
-                
-                self.current_zero_raw = loaded_zeros
-                
-                # 更新UI
-                self.calib_status_label.setText(f"状态: 已加载 ({timestamp})")
-                self.calib_status_label.setStyleSheet("color: #2196F3; font-weight: bold;")
-                
-                preview = ", ".join([f"E{i}={v}" for i, v in enumerate(self.current_zero_raw[:5])])
-                self.zero_preview_label.setText(f"零点数据(加载): {preview}...")
-                
-                # 启用按钮
-                self.apply_calib_btn.setEnabled(True)
-                self.save_calib_btn.setEnabled(True)
-                
-                self.log(f"✓ 零点配置已加载: {filename}")
-                
-                # 如果已连接，自动应用；否则询问
-                if self.controller.is_connected():
-                    try:
-                        self.controller.set_encoder_zeros(self.current_zero_raw)
-                        self.log(f"✓ 零点配置已自动应用到下位机")
-                        self.calib_status_label.setText("状态: 已应用（加载）")
-                        QMessageBox.information(self, "应用成功", "零点配置已加载并应用到下位机")
-                    except Exception as e:
-                        QMessageBox.warning(self, "应用失败", f"零点已加载但应用失败: {str(e)}")
-                else:
-                    # 询问是否立即应用
-                    reply = QMessageBox.question(
-                        self, 
-                        "配置加载成功",
-                        "零点配置已加载，是否立即应用到下位机？\n（需要设备已连接）",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                    )
-                    
-                    if reply == QMessageBox.StandardButton.Yes:
-                        self.on_apply_calibration_clicked()
-                
-            except Exception as e:
-                QMessageBox.critical(self, "加载失败", f"错误: {str(e)}")
     
     def update_ui(self):
         """UI更新定时器"""
@@ -1691,80 +1646,93 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"电机控制失败: {str(e)}")
     
     def on_mcp_confirm_zero(self):
-        """确认标定零点 - 记录当前M00/M01位置为零点"""
-        # 获取当前M00和M01的位置
-        m00_pos = self.motor_sliders[0].get_value()
-        m01_pos = self.motor_sliders[1].get_value()
+        """确认 MCP 机构零点：通过 CMD_CALIB_DATA 写入 ESP32（绳长 PD 必须项）。"""
+        if not self.controller.is_connected():
+            QMessageBox.warning(self, "警告", "请先连接设备")
+            return
+        if not hasattr(self, "current_zero_raw") or len(self.current_zero_raw) != ENCODER_COUNT:
+            QMessageBox.warning(
+                self,
+                "警告",
+                "请先完成磁编零点标定并【应用零点】，或确保已加载 zero_config.json；\n"
+                "绳长 PD 需要磁编零点帧与机构电机多圈零点同时写入下位机。",
+            )
+            return
 
-        # 确认对话框
+        with self.controller.state_lock:
+            has_sa = bool(self.controller.current_state.has_servo_angle_data)
+            sa = list(self.controller.current_state.servo_angles) if has_sa else []
+
+        if not has_sa or len(sa) < MOTOR_COUNT:
+            QMessageBox.warning(
+                self,
+                "警告",
+                "尚未收到舵机遥测 (0x03)，无法记录机构零点。\n请连接稳定、等待电机状态刷新后再试。",
+            )
+            return
+
+        m00_fb = int(sa[0])
+        m01_fb = int(sa[1])
+
         reply = QMessageBox.question(
             self,
             "确认标定零点",
-            f"请确认将当前位置记录为MCP零点:\n\n"
-            f"M00 (电机0): {m00_pos}\n"
-            f"M01 (电机1): {m01_pos}\n\n"
-            f"建议此时 Fe/AA 滑块为 0（θ1=θ2=0），与绳长正解零位一致。\n\n"
-            f"点击【Yes】确认当前位置为零点\n"
-            f"点击【No】取消并继续调整",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            "将把当前姿态写入 ESP32 绳长闭环用机构零点（0xCF 附带 22 路多圈 abs）。\n\n"
+            f"遥测 M00={m00_fb}, M01={m01_fb}\n"
+            "（以遥测为准，UI 滑块可能略有延迟）\n\n"
+            "建议此时 Fe/AA 为 0°，与绳长正解零位一致。\n\n"
+            "是否确认？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
-        if reply == QMessageBox.StandardButton.Yes:
-            try:
-                # 保存零点位置
-                self.mcp_zero_positions = [m00_pos, m01_pos]
+        if reply != QMessageBox.StandardButton.Yes:
+            return
 
-                # 发送标定命令到下位机
-                self.controller.send_raw_command("ZERO_ALL\n")
-                self.log("⚡ 双电机零点标定命令已发送")
+        try:
+            self.controller.set_encoder_zeros(self.current_zero_raw)
+            self.mcp_zero_positions = [m00_fb, m01_fb]
+            self._auto_save_encoder_zero_config()
 
-                # 保存到EEPROM
-                self.controller.send_raw_command("SAVE\n")
-                self.log("✓ 零点已保存到EEPROM（掉电不丢失）")
+            self.mcp_zero_pos_label.setText(
+                f"当前零点: M00={m00_fb}, M01={m01_fb} (已写入下位机+NVS)"
+            )
+            self.mcp_zero_pos_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11px;")
+            self.mcp_result_label.setText(
+                f"✓ 已下发 CMD_CALIB_DATA。固件绳长 PD 使用 E0=FE、E1=AA；"
+                f"滑块同步 E{self.mcp_encoder_fe_index}(FE)/E{self.mcp_encoder_aa_index}(AA)。"
+            )
 
-                # 更新UI显示
-                self.mcp_zero_pos_label.setText(f"当前零点: M00={m00_pos}, M01={m01_pos} (已保存)")
-                self.mcp_zero_pos_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11px;")
-                self.mcp_result_label.setText(
-                    "✓ 标定完成！下一次连接将按磁编码器同步 Fe/AA 滑块（E{}/E{}）".format(
-                        self.mcp_encoder_fe_index, self.mcp_encoder_aa_index
-                    )
-                )
+            self._save_mcp_zero_config()
+            self.mcp_zero_ready = True
+            self._refresh_mcp_fe_aa_controls()
 
-                # 自动保存配置到文件
-                self._save_mcp_zero_config()
+            if self.controller.is_connected():
+                ang: List[float] = []
+                err: List[bool] = []
+                with self.controller.state_lock:
+                    st = self.controller.current_state
+                    if st.has_sensor_data:
+                        ang = [e.current_angle_deg for e in st.encoders]
+                        err = [e.error for e in st.encoders]
+                if len(ang) >= ENCODER_COUNT and self._try_sync_mcp_sliders_from_encoders(ang, err):
+                    self.mcp_pending_encoder_sync = False
 
-                self.mcp_zero_ready = True
-                self._refresh_mcp_fe_aa_controls()
-                # 标定完成当帧若已有编码器数据，立即尝试同步滑块
-                if self.controller.is_connected():
-                    ang: List[float] = []
-                    err: List[bool] = []
-                    with self.controller.state_lock:
-                        st = self.controller.current_state
-                        if st.has_sensor_data:
-                            ang = [e.current_angle_deg for e in st.encoders]
-                            err = [e.error for e in st.encoders]
-                    if len(ang) >= ENCODER_COUNT and self._try_sync_mcp_sliders_from_encoders(ang, err):
-                        self.mcp_pending_encoder_sync = False
+            self.log(
+                f"✓ MCP 机构零点已写入 ESP32（M00={m00_fb}, M01={m01_fb}），"
+                "请「关节角度模式」后按 START"
+            )
 
-                QMessageBox.information(
-                    self,
-                    "标定成功",
-                    "双电机MCP关节零点标定完成！\n\n"
-                    "✓ 当前位置已记录为零点\n"
-                    "✓ 零点数据已保存到设备EEPROM\n"
-                    "✓ 配置已保存到文件\n"
-                    "✓ 下次启动自动加载\n\n"
-                    f"零点位置: M00={m00_pos}, M01={m01_pos}\n\n"
-                    f"现在可拖动 Fe/AA 实时控制；请先「启动控制 (START)」。\n"
-                    f"滑块位置将与磁编码器 E{self.mcp_encoder_fe_index}(FE)/"
-                    f"E{self.mcp_encoder_aa_index}(AA) 对齐。\n"
-                    "仍可用下方按钮再发一次确认。",
-                )
+            QMessageBox.information(
+                self,
+                "标定成功",
+                "已通过 0xCF 写入磁编零点 + 全机机构多圈 abs（下位机 NVS 保存）。\n\n"
+                f"遥测 M00={m00_fb}, M01={m01_fb}\n\n"
+                "请使用「关节角度模式」→「启动控制」。\n"
+                "若仍无绳长 PD 日志，请确认 CAN 上 E0/E1 无断连且固件已含绳长 PD。",
+            )
 
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"标定失败: {str(e)}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"标定失败: {str(e)}")
 
     
     def _save_mcp_zero_config(self):
@@ -1784,7 +1752,7 @@ class MainWindow(QMainWindow):
                 'description': 'MCP双电机零点与绳长比例'
             }
 
-            filename = os.path.join(os.path.dirname(ZERO_CONFIG_FILE), "mcp_zero_config.json")
+            filename = os.path.join(parent_dir, "mcp_zero_config.json")
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
 
@@ -1795,7 +1763,7 @@ class MainWindow(QMainWindow):
     def _load_mcp_zero_config(self):
         """加载MCP零点配置"""
         try:
-            filename = os.path.join(os.path.dirname(ZERO_CONFIG_FILE), "mcp_zero_config.json")
+            filename = os.path.join(parent_dir, "mcp_zero_config.json")
             if os.path.exists(filename):
                 with open(filename, 'r', encoding='utf-8') as f:
                     config = json.load(f)
@@ -1898,11 +1866,31 @@ class MainWindow(QMainWindow):
             return
         self.mcp_live_timer.start(40)
 
+    def _mcp_merge_fe_aa_into_joint_angles(self) -> List[float]:
+        """当前全局目标角副本，仅覆盖 MCP 的 FE/AA（配置中的磁编关节索引）。"""
+        angles = list(self.controller.get_target_angles())
+        while len(angles) < ENCODER_COUNT:
+            angles.append(0.0)
+        angles = angles[:ENCODER_COUNT]
+        ife = int(self.mcp_encoder_fe_index)
+        iaa = int(self.mcp_encoder_aa_index)
+        if 0 <= ife < ENCODER_COUNT:
+            angles[ife] = float(self.mcp_fe_slider.value())
+        if 0 <= iaa < ENCODER_COUNT:
+            angles[iaa] = float(self.mcp_aa_slider.value())
+        return angles
+
     def _send_mcp_fe_aa_live(self) -> None:
-        """节流到期后发送一次 CMD_MOTOR_POS_ABS（无弹窗）。"""
+        """节流到期后下发：关节模式用 CMD_ANGLE_CTRL；直控模式用多圈绝对位置。"""
         if not self.controller.is_connected() or not self.controller.is_started():
             return
         if not self.mcp_fe_slider.isEnabled():
+            return
+        if self.controller.get_control_mode() == ControlMode.JOINT_ANGLE:
+            try:
+                self.controller.set_target_angles_live(self._mcp_merge_fe_aa_into_joint_angles())
+            except Exception:
+                pass
             return
         res = self._compute_mcp_fe_aa_positions()
         if res is None:
@@ -1910,6 +1898,7 @@ class MainWindow(QMainWindow):
         positions, _, _, _, _ = res
         try:
             self.controller.send_motor_positions_absolute_force(positions)
+            self._record_last_motor_command(positions)
         except Exception:
             pass
 
@@ -1960,12 +1949,35 @@ class MainWindow(QMainWindow):
                 self.mcp_m2_angle_label.setStyleSheet("font-size: 14px; color: #2196F3;")
     
     def on_mcp_apply_clicked(self):
-        """手动再发一次当前 Fe/AA（与滑块实时逻辑相同，带提示框）。"""
+        """应用当前 Fe/AA：关节模式发全路角度；直控模式发多圈绝对位置。"""
         if not self.controller.is_connected():
             QMessageBox.warning(self, "警告", "请先连接设备")
             return
         if not self.controller.is_started():
             QMessageBox.warning(self, "警告", "请先点击「启动控制 (START)」后再应用 Fe/AA")
+            return
+
+        if self.controller.get_control_mode() == ControlMode.JOINT_ANGLE:
+            try:
+                angles = self._mcp_merge_fe_aa_into_joint_angles()
+                fe_value = float(self.mcp_fe_slider.value())
+                aa_value = float(self.mcp_aa_slider.value())
+                ife = int(self.mcp_encoder_fe_index)
+                iaa = int(self.mcp_encoder_aa_index)
+                self.controller.set_target_angles(angles)
+                self.log(
+                    f"MCP Fe/AA（关节模式）→ CMD_ANGLE_CTRL："
+                    f" E{ife}(FE)={fe_value:.1f}°, E{iaa}(AA)={aa_value:.1f}°"
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"发送失败: {str(e)}")
+                return
+            QMessageBox.information(
+                self,
+                "位置已应用",
+                f"已发送 21 路关节目标（θ2=FE 写入 E{ife}，θ1=AA 写入 E{iaa}）。\n"
+                f"FE={fe_value:.1f}°, AA={aa_value:.1f}°",
+            )
             return
 
         res = self._compute_mcp_fe_aa_positions()
@@ -1991,6 +2003,7 @@ class MainWindow(QMainWindow):
 
         try:
             self.controller.send_motor_positions_absolute_force(positions)
+            self._record_last_motor_command(positions)
             self.log("  ✓ CMD_MOTOR_POS_ABS 已发送（下位机会切入直控模式）")
         except Exception as e:
             self.log(f"  ✗ 发送失败: {str(e)}")
@@ -2005,60 +2018,6 @@ class MainWindow(QMainWindow):
             f"M00={positions[0]}, M01={positions[1]}\n\n"
             f"已发送多圈绝对位置（其余电机保持当前反馈值）。",
         )
-    
-    # ===== 自动加载/保存零点配置 =====
-    
-    def auto_load_zero_config(self):
-        """启动时自动加载零点配置文件"""
-        try:
-            if os.path.exists(ZERO_CONFIG_FILE):
-                with open(ZERO_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                
-                loaded_zeros = config.get('zero_raw_values', [])
-                timestamp = config.get('timestamp', '未知')
-                
-                if len(loaded_zeros) == ENCODER_COUNT:
-                    self.current_zero_raw = loaded_zeros
-                    
-                    # 更新UI显示
-                    self.calib_status_label.setText(f"状态: 已加载 ({timestamp})")
-                    self.calib_status_label.setStyleSheet("color: #2196F3; font-weight: bold;")
-                    
-                    preview = ", ".join([f"E{i}={v}" for i, v in enumerate(self.current_zero_raw[:3])])
-                    self.zero_preview_label.setText(f"已加载零点: {preview}... (共{ENCODER_COUNT}个)")
-                    
-                    self.apply_calib_btn.setEnabled(False)  # 等待连接后才能应用
-                    self.save_calib_btn.setEnabled(True)
-                    
-                    self.log(f"✓ 自动加载零点配置成功 - 时间: {timestamp}")
-                    self.log(f"  连接设备后将自动下发零点到下位机")
-                else:
-                    self.log(f"⚠ 零点配置文件编码器数量不匹配，忽略")
-            else:
-                self.log(f"ℹ 未找到零点配置文件，首次使用请进行标定")
-        except Exception as e:
-            self.log(f"⚠ 加载零点配置失败: {str(e)}")
-    
-    def auto_save_zero_config(self):
-        """自动保存零点配置到默认文件"""
-        if not hasattr(self, 'current_zero_raw') or not self.current_zero_raw:
-            return
-        
-        try:
-            config = {
-                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
-                'encoder_count': ENCODER_COUNT,
-                'zero_raw_values': self.current_zero_raw,
-                'description': '磁编码器零点配置（自动保存）'
-            }
-            
-            with open(ZERO_CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-            
-            self.log(f"✓ 零点配置已自动保存")
-        except Exception as e:
-            self.log(f"⚠ 自动保存零点配置失败: {str(e)}")
     
     def closeEvent(self, event):
         """窗口关闭事件"""

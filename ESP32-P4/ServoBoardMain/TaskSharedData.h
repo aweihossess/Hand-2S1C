@@ -167,6 +167,12 @@ typedef struct {
 
     int32_t calib_zero_raw_cache[ENCODER_TOTAL_NUM];
     volatile uint8_t calib_zero_raw_valid;
+
+    // 机构零点姿态下各舵机多圈绝对位置（与 PACKET_TYPE_SERVO_ANGLE 中 int32 语义一致），由上位机标定下发。
+    int32_t mechanism_zero_motor_abs[SERVO_TOTAL_NUM];
+    volatile uint8_t mechanism_zero_motor_valid;
+    // 绳长 PD 由非激活→激活时置 1，UpperComm 发 PACKET_TYPE_MCP_ROPE_PD 后清零
+    volatile uint8_t mcp_rope_pd_notify_host;
 } TaskSharedData_t;
 
 #endif // TASK_SHARED_DATA_H

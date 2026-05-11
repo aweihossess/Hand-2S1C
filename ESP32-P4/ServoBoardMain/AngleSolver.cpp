@@ -6,19 +6,48 @@
 #include "pid.h"
 #include "TaskSharedData.h"
 #include "CalibrationTask.h"
+#include "McpTendonPdControl.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
+// MCP 绳长 PD：与 desk_2S1C mcp_zero_config 默认一致，E0=FE(θ2)、E1=AA(θ1)
+static const uint8_t kMcpPdJointFeIdx = 0;
+static const uint8_t kMcpPdJointAaIdx = 1;
+
 // AngleSolver 模块职责：
 // 1) 汇总舵机反馈与编码器反馈，完成关节闭环输入构建；
-// 2) 执行目标限幅、双环 PID 解算与两种控制模式下发；
-// 3) 处理单关节急停、joint16 双反馈故障与反绕保护状态机。
+// 2) 在已下发磁编零点（calib_zero_raw_cache）时：q_fb = 原始方向化计数相对零点 → 度 → 低通 → 对称限幅；
+//    q_ref = 用户目标 → 关节限幅 → 按最大角速度向目标插值；否则沿用原映射与目标处理；
+// 3) 执行双环 PID 解算与两种控制模式下发；处理单关节急停、joint16 双反馈故障与反绕保护。
 
 #ifndef SOLVER_DIAG_LOG_ENABLE
 #define SOLVER_DIAG_LOG_ENABLE 0
 #endif
+
+// 总线只反馈单圈 raw；内部 turnCount 仅靠相邻采样跨圈推断，易与「本周期实际下发的多圈目标」失配。
+// 用「本周期舵机指令(直控目标 / 关节解算 outPulse 等) + 当前 raw」换算为同量纲多圈值，再写入 0x03 供上位机显示。
+static int32_t reconcileMultiturnAbsForHost(int32_t cmdAbs, int16_t rawPos)
+{
+    int32_t c = cmdAbs;
+    if (c > 30719) {
+        c = 30719;
+    }
+    if (c < -30719) {
+        c = -30719;
+    }
+    const int32_t r = (int32_t)rawPos;
+    const int32_t k = (int32_t)lroundf((float)(c - r) / 4096.0f);
+    int32_t out = k * 4096 + r;
+    if (out > 30719) {
+        out = 30719;
+    }
+    if (out < -30719) {
+        out = -30719;
+    }
+    return out;
+}
 
 // 由 SystemTask 初始化的全局对象与映射表。
 extern ServoBusManager servoBus0;
@@ -111,7 +140,8 @@ static const int32_t kJoint16TensionBias = 0;
 static const int32_t kJoint16DiffThresholdCounts = 180;
 static const uint8_t kJoint16DiffFaultCycles = 3;
 
-static const uint32_t kCanBusOfflineTimeoutMs = 300;
+// CAN 传感器时间戳超过该间隔视为离线。qrefInterpActive/绳长 PD 依赖此项；过小易在丢末帧或总线抖动时间歇掉线。
+static const uint32_t kCanBusOfflineTimeoutMs = 1200;
 static const uint16_t kEncoderDisconnectRaw = 0xFFFF;
 
 // 放绳反绕保护阈值（平衡档）。
@@ -261,6 +291,8 @@ static int32_t encoderCountFromDeg(float deg)
 // 调参：改 kMagEncoderLpfCutoffHz（Hz）。经验：fc 约为 fs 的 1/10～1/5 起纹波抑制与相位折衷可试。
 static const float kMagEncoderLpfSampleRateHz = 100.0f;
 static const float kMagEncoderLpfCutoffHz = 15.0f;
+// q_ref 插值最大角速度（度/秒），taskSolver 周期 10ms 时步长约 0.01×该值。
+static const float kQrefMaxDegPerSecond = 360.0f;
 
 typedef struct
 {
@@ -362,6 +394,99 @@ static float clampJointTargetDegByCalib(float targetDeg, uint8_t jointIndex)
         return maxDeg;
     }
     return targetDeg;
+}
+
+// 反馈角（相对磁编零位，度）对称限幅到约 [-maxDeg, maxDeg]，与关节标定机械行程一致。
+static float clampJointFbkDegMagFrame(float fbkDeg, uint8_t jointIndex)
+{
+    if (!isfinite(fbkDeg)) {
+        fbkDeg = 0.0f;
+    }
+    if (jointIndex >= ENCODER_TOTAL_NUM) {
+        return 0.0f;
+    }
+    const int32_t maxCount =
+        g_jointCalibConfig[jointIndex].angleScope -
+        g_jointCalibConfig[jointIndex].bottomReserved -
+        g_jointCalibConfig[jointIndex].topReserved;
+    const float maxDeg = convertEncoderCountToDeg(maxCount);
+    if (!isfinite(maxDeg) || maxDeg <= 0.0f) {
+        return 0.0f;
+    }
+    if (fbkDeg < -maxDeg) {
+        return -maxDeg;
+    }
+    if (fbkDeg > maxDeg) {
+        return maxDeg;
+    }
+    return fbkDeg;
+}
+
+// 一阶插值（饱和步长）：每周期向 target 逼近不超过 maxStep（度）。
+static float qRefStepToward(float current, float target, float maxStep)
+{
+    if (!isfinite(current)) {
+        current = 0.0f;
+    }
+    if (!isfinite(target)) {
+        target = current;
+    }
+    if (!isfinite(maxStep) || maxStep <= 0.0f) {
+        return target;
+    }
+    const float d = target - current;
+    if (d > maxStep) {
+        return current + maxStep;
+    }
+    if (d < -maxStep) {
+        return current - maxStep;
+    }
+    return target;
+}
+
+// MCP Fe/AA 指令限幅（与 desk_2S1C GUI 滑块范围一致），便于 q_ref 与 mcp_kinematics 关节角域一致
+static const float kMcpFeDegMin = -26.0f;
+static const float kMcpFeDegMax = 87.0f;
+static const float kMcpAaDegMin = -15.0f;
+static const float kMcpAaDegMax = 15.0f;
+
+static float clampMcpFeCmdDeg(float v)
+{
+    if (!isfinite(v)) {
+        return 0.0f;
+    }
+    if (v < kMcpFeDegMin) {
+        return kMcpFeDegMin;
+    }
+    if (v > kMcpFeDegMax) {
+        return kMcpFeDegMax;
+    }
+    return v;
+}
+
+static float clampMcpAaCmdDeg(float v)
+{
+    if (!isfinite(v)) {
+        return 0.0f;
+    }
+    if (v < kMcpAaDegMin) {
+        return kMcpAaDegMin;
+    }
+    if (v > kMcpAaDegMax) {
+        return kMcpAaDegMax;
+    }
+    return v;
+}
+
+static float clampJointCmdDegForSolver(uint8_t jointIndex, float v)
+{
+    if (jointIndex == kMcpPdJointFeIdx) {
+        return clampMcpFeCmdDeg(v);
+    }
+    if (jointIndex == kMcpPdJointAaIdx) {
+        return clampMcpAaCmdDeg(v);
+    }
+    return clampJointTargetDegByCalib(v, jointIndex);
 }
 
 // 单关节急停判定：任一输入状态异常即触发急停。
@@ -689,6 +814,9 @@ void taskSolver(void* parameter)
 
     static MagEncBiquadState s_magEncBiquad[ENCODER_TOTAL_NUM];
     static uint8_t s_magEncLpfInited[ENCODER_TOTAL_NUM];
+    static float s_qRefDeg[ENCODER_TOTAL_NUM];
+    static uint8_t s_qRefInited[ENCODER_TOTAL_NUM];
+    static uint8_t s_prevControlEnabledForQref = 0;
 
     while (1)
     {
@@ -755,6 +883,12 @@ void taskSolver(void* parameter)
         }
         readBusPhase ^= 1;
 
+        int32_t servoHwAbs[SERVO_TOTAL_NUM];
+        memset(servoHwAbs, 0, sizeof(servoHwAbs));
+        int32_t servoReportRef[SERVO_TOTAL_NUM];
+        uint8_t servoReportRefValid[SERVO_TOTAL_NUM];
+        memset(servoReportRefValid, 0, sizeof(servoReportRefValid));
+
         ServoAngleData_t servoData;
         ServoAngleData_t servoRawData;
         ServoTelemetryData_t telemetryData;
@@ -775,6 +909,7 @@ void taskSolver(void* parameter)
                 const int32_t absPos = pBus->getAbsolutePosition(id);
                 const int16_t rawPos = pBus->getRawPosition(id);
                 const ServoFeedback& fb = pBus->getFeedback(id);
+                servoHwAbs[ch] = absPos;
                 servoData.servoAngles[ch] = absPos;
                 servoRawData.servoRawPositions[ch] = rawPos;
                 servoData.onlineStatus[ch] = 1;
@@ -785,16 +920,6 @@ void taskSolver(void* parameter)
                 telemetryData.temperature[ch] = fb.temperature;
                 telemetryData.onlineStatus[ch] = 1;
             }
-        }
-
-        if (sharedData->servoAngleQueue) {
-            xQueueOverwrite(sharedData->servoAngleQueue, &servoData);
-        }
-        if (sharedData->servoRawQueue) {
-            xQueueOverwrite(sharedData->servoRawQueue, &servoRawData);
-        }
-        if (sharedData->servoTelemetryQueue) {
-            xQueueOverwrite(sharedData->servoTelemetryQueue, &telemetryData);
         }
 
         for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
@@ -887,6 +1012,11 @@ void taskSolver(void* parameter)
         mappedData.timestamp = millis();
         mappedData.isValid = canBusOnline;
 
+        float qFbDegRaw[ENCODER_TOTAL_NUM];
+        memset(qFbDegRaw, 0, sizeof(qFbDegRaw));
+
+        const bool useHostMagZeroFrame = (sharedData->calib_zero_raw_valid != 0);
+
         if (canBusOnline)
         {
             for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
@@ -894,31 +1024,47 @@ void taskSolver(void* parameter)
                 if (sensorData.encoderValues[i] == kEncoderDisconnectRaw) {
                     mappedData.validFlags[i] = 0;
                     magAngles[i] = 0.0f;
+                    qFbDegRaw[i] = 0.0f;
                     continue;
                 }
 
-                const int32_t orientedRaw = orientEncoderRaw(sensorData.encoderValues[i], g_encoderDirection[i]);
-                int32_t mappedCount = orientedRaw;
-                if (g_jointCalibResult[i].success) {
-                    const int32_t offset = getEncoderOffset((uint8_t)i);
-                    const int32_t angleScope = g_jointCalibConfig[i].angleScope;
-                    const int32_t bottomReserved = g_jointCalibConfig[i].bottomReserved;
-                    int32_t delta = orientedRaw - offset + bottomReserved;
-                    delta %= kEncoderModulo;
-                    if (delta < 0) delta += kEncoderModulo;
-                    if (delta > angleScope + kEncoderMarginCounts) {
-                        delta -= kEncoderModulo;
-                    }
-                    mappedCount = delta - bottomReserved;
-                }
+                const int32_t orientedRaw =
+                    orientEncoderRaw(sensorData.encoderValues[i], g_encoderDirection[i]);
 
-                mappedData.angleValues[i] = clampMappedCountForProtocol(mappedCount);
-                mappedData.validFlags[i] = 1;
-                magAngles[i] = convertEncoderCountToDeg(mappedCount);
+                if (useHostMagZeroFrame) {
+                    mappedData.angleValues[i] = clampMappedCountForProtocol(orientedRaw);
+                    mappedData.validFlags[i] = 1;
+                    const int32_t z = sharedData->calib_zero_raw_cache[i];
+                    int32_t diff = (int32_t)orientedRaw - z;
+                    diff = wrapEncoderDelta(diff);
+                    qFbDegRaw[i] = (float)diff * (360.0f / (float)kEncoderModulo);
+                    magAngles[i] = qFbDegRaw[i];
+                } else {
+                    int32_t mappedCount = orientedRaw;
+                    if (g_jointCalibResult[i].success) {
+                        const int32_t offset = getEncoderOffset((uint8_t)i);
+                        const int32_t angleScope = g_jointCalibConfig[i].angleScope;
+                        const int32_t bottomReserved = g_jointCalibConfig[i].bottomReserved;
+                        int32_t delta = orientedRaw - offset + bottomReserved;
+                        delta %= kEncoderModulo;
+                        if (delta < 0) {
+                            delta += kEncoderModulo;
+                        }
+                        if (delta > angleScope + kEncoderMarginCounts) {
+                            delta -= kEncoderModulo;
+                        }
+                        mappedCount = delta - bottomReserved;
+                    }
+
+                    mappedData.angleValues[i] = clampMappedCountForProtocol(mappedCount);
+                    mappedData.validFlags[i] = 1;
+                    qFbDegRaw[i] = convertEncoderCountToDeg(mappedCount);
+                    magAngles[i] = qFbDegRaw[i];
+                }
             }
         }
 
-        if (xSemaphoreTake(sharedData->targetAnglesMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+        if (xSemaphoreTake(sharedData->targetAnglesMutex, pdMS_TO_TICKS(50)) == pdTRUE)
         {
             memcpy(localTargets, sharedData->targetAngles, sizeof(localTargets));
             xSemaphoreGive(sharedData->targetAnglesMutex);
@@ -936,28 +1082,35 @@ void taskSolver(void* parameter)
                 if (mappedData.validFlags[i] == 0) {
                     s_magEncLpfInited[i] = 0;
                     magEncBiquadStateClear(&s_magEncBiquad[i]);
+                    magAngles[i] = 0.0f;
                     continue;
                 }
-                const float xIn = magAngles[i];
+                const float xIn = qFbDegRaw[i];
                 if (!isfinite(xIn)) {
                     s_magEncLpfInited[i] = 0;
                     magEncBiquadStateClear(&s_magEncBiquad[i]);
                     continue;
                 }
                 if (!s_magEncLpfInited[i]) {
-                    // 初值：假设常值输入下的稳态，减轻切入瞬态
                     s_magEncBiquad[i].x1 = s_magEncBiquad[i].x2 = xIn;
                     s_magEncBiquad[i].y1 = s_magEncBiquad[i].y2 = xIn;
                     s_magEncLpfInited[i] = 1;
                 }
                 magAngles[i] = magEncBiquadProcess(&s_magEncBiquad[i], xIn);
-                const int32_t fc = encoderCountFromDeg(magAngles[i]);
-                mappedData.angleValues[i] = clampMappedCountForProtocol(fc);
+                if (!useHostMagZeroFrame) {
+                    const int32_t fc = encoderCountFromDeg(magAngles[i]);
+                    mappedData.angleValues[i] = clampMappedCountForProtocol(fc);
+                }
             }
         } else {
             memset(s_magEncLpfInited, 0, sizeof(s_magEncLpfInited));
             for (int i = 0; i < ENCODER_TOTAL_NUM; i++) {
                 magEncBiquadStateClear(&s_magEncBiquad[i]);
+                if (mappedData.validFlags[i]) {
+                    magAngles[i] = qFbDegRaw[i];
+                } else {
+                    magAngles[i] = 0.0f;
+                }
             }
         }
 
@@ -965,15 +1118,137 @@ void taskSolver(void* parameter)
             xQueueOverwrite(sharedData->mappedAngleQueue, &mappedData);
         }
 
-        // 仅关节控制模式下执行角度限幅（直控模式透传原始目标）。
-        if (sharedData->control_mode == CONTROL_MODE_JOINT) {
-            for (uint8_t jointIndex = 0; jointIndex < ENCODER_TOTAL_NUM; jointIndex++) {
-                localTargets[jointIndex] = clampJointTargetDegByCalib(localTargets[jointIndex], jointIndex);
+        float jointTargetDegForLoop[ENCODER_TOTAL_NUM];
+        memcpy(jointTargetDegForLoop, localTargets, sizeof(jointTargetDegForLoop));
+
+        if (hostControlEnabled && !s_prevControlEnabledForQref) {
+            memset(s_qRefInited, 0, sizeof(s_qRefInited));
+        }
+        s_prevControlEnabledForQref = hostControlEnabled;
+
+        const bool qrefInterpActive =
+            hostControlEnabled &&
+            (sharedData->control_mode == CONTROL_MODE_JOINT) &&
+            canBusOnline &&
+            useHostMagZeroFrame;
+
+        const float qRefMaxStep =
+            kQrefMaxDegPerSecond * (float)pdTICKS_TO_MS(solverPeriodTicks) / 1000.0f;
+
+        if (sharedData->control_mode == CONTROL_MODE_JOINT && canBusOnline) {
+            for (uint8_t j = 0; j < ENCODER_TOTAL_NUM; j++) {
+                if (mappedData.validFlags[j]) {
+                    magAngles[j] = clampJointFbkDegMagFrame(magAngles[j], j);
+                }
             }
         }
 
-        // 阶段4：执行双环解算，得到每关节目标脉冲。
-        angleSolver.compute(localTargets, magAngles, absolutePosition, outPulses);
+        if (qrefInterpActive) {
+            float qRefDeg[ENCODER_TOTAL_NUM];
+            for (uint8_t j = 0; j < ENCODER_TOTAL_NUM; j++) {
+                const float qc = clampJointCmdDegForSolver(j, localTargets[j]);
+                if (mappedData.validFlags[j] == 0) {
+                    s_qRefInited[j] = 0;
+                    qRefDeg[j] = qc;
+                    jointTargetDegForLoop[j] = qc;
+                    continue;
+                }
+                if (!s_qRefInited[j]) {
+                    s_qRefDeg[j] = magAngles[j];
+                    s_qRefInited[j] = 1;
+                }
+                s_qRefDeg[j] = qRefStepToward(s_qRefDeg[j], qc, qRefMaxStep);
+                qRefDeg[j] = s_qRefDeg[j];
+                jointTargetDegForLoop[j] = qRefDeg[j];
+            }
+            angleSolver.compute(qRefDeg, magAngles, absolutePosition, outPulses);
+        } else {
+            if (!useHostMagZeroFrame || sharedData->control_mode != CONTROL_MODE_JOINT) {
+                memset(s_qRefInited, 0, sizeof(s_qRefInited));
+            }
+            if (sharedData->control_mode == CONTROL_MODE_JOINT) {
+                for (uint8_t jointIndex = 0; jointIndex < ENCODER_TOTAL_NUM; jointIndex++) {
+                    localTargets[jointIndex] =
+                        clampJointCmdDegForSolver(jointIndex, localTargets[jointIndex]);
+                    jointTargetDegForLoop[jointIndex] = localTargets[jointIndex];
+                }
+            }
+            angleSolver.compute(localTargets, magAngles, absolutePosition, outPulses);
+        }
+
+        // MCP M00/M01：绳长 PD 得 u_cmd(mm) → 脉冲 → setTarget。
+        // 磁编/CAN 单周期抖动会导致 raw 条件瞬断，表现为「有时进绳长 PD、有时不进」；对进入/退出做 streak 去抖。
+        const float mcpPdDtSec = (float)pdTICKS_TO_MS(solverPeriodTicks) / 1000.0f;
+        int32_t mcpPdMotorAbs[2] = {0, 0};
+        const bool rawMcpRopePdOk =
+            controlEnabled && (sharedData->control_mode == CONTROL_MODE_JOINT) && qrefInterpActive &&
+            (sharedData->mechanism_zero_motor_valid != 0) &&
+            mappedData.validFlags[kMcpPdJointAaIdx] && mappedData.validFlags[kMcpPdJointFeIdx];
+
+        static uint8_t s_mcpRopePdOkStreak = 0;
+        static uint8_t s_mcpRopePdBadStreak = 0;
+        static uint8_t s_mcpRopePdLatched = 0;
+        constexpr uint8_t kMcpRopePdEnterCycles = 5; // ~50ms@10ms 已连续满足才允许进入
+        constexpr uint8_t kMcpRopePdExitCycles = 10; // ~100ms 连续不满足才退出并清积分
+
+        if (!hostControlEnabled) {
+            s_mcpRopePdOkStreak = 0;
+            s_mcpRopePdBadStreak = 0;
+            if (s_mcpRopePdLatched) {
+                s_mcpRopePdLatched = 0;
+                mcpTendonPdReset();
+            }
+        }
+
+        if (rawMcpRopePdOk) {
+            s_mcpRopePdBadStreak = 0;
+            if (s_mcpRopePdOkStreak < 255) {
+                ++s_mcpRopePdOkStreak;
+            }
+        } else {
+            s_mcpRopePdOkStreak = 0;
+            if (s_mcpRopePdBadStreak < 255) {
+                ++s_mcpRopePdBadStreak;
+            }
+        }
+        if (!s_mcpRopePdLatched) {
+            if (s_mcpRopePdOkStreak >= kMcpRopePdEnterCycles) {
+                s_mcpRopePdLatched = 1;
+            }
+        } else if (s_mcpRopePdBadStreak >= kMcpRopePdExitCycles) {
+            s_mcpRopePdLatched = 0;
+            mcpTendonPdReset();
+        }
+
+        bool mcpTendonPdActive = false;
+        if (s_mcpRopePdLatched && rawMcpRopePdOk) {
+            const int32_t mechZ[2] = {sharedData->mechanism_zero_motor_abs[0],
+                                      sharedData->mechanism_zero_motor_abs[1]};
+            static const float kRopeCountsPerMm[2] = {163.0f, 1630.0f};
+            const float qaaR = jointTargetDegForLoop[kMcpPdJointAaIdx];
+            const float qfeR = jointTargetDegForLoop[kMcpPdJointFeIdx];
+            const float qaaF = magAngles[kMcpPdJointAaIdx];
+            const float qfeF = magAngles[kMcpPdJointFeIdx];
+            mcpTendonPdStep(
+                qaaR,
+                qfeR,
+                qaaF,
+                qfeF,
+                mcpPdDtSec,
+                mechZ,
+                kRopeCountsPerMm,
+                &mcpPdMotorAbs[0],
+                &mcpPdMotorAbs[1]);
+            mcpTendonPdActive = true;
+        } else if (!s_mcpRopePdLatched) {
+            mcpTendonPdReset();
+        }
+
+        static uint8_t s_prevMcpRopePdLatchedNotify = 0;
+        if (s_mcpRopePdLatched && !s_prevMcpRopePdLatchedNotify) {
+            sharedData->mcp_rope_pd_notify_host = 1;
+        }
+        s_prevMcpRopePdLatchedNotify = s_mcpRopePdLatched;
 
         if (sharedData->control_mode == CONTROL_MODE_DIRECT_MOTOR)
         {
@@ -996,6 +1271,8 @@ void taskSolver(void* parameter)
                             const int16_t holdPos = clampServoPos(servoData.servoAngles[ch]);
                             pBus->setTarget(id, holdPos, SERVO_TARGET_SPEED_DEFAULT, SERVO_TARGET_ACC_DEFAULT);
                             busWritePending[bus] = true;
+                            servoReportRef[ch] = (int32_t)holdPos;
+                            servoReportRefValid[ch] = 1;
                         }
                         continue;
                     }
@@ -1032,6 +1309,8 @@ void taskSolver(void* parameter)
                     }
                     pBus->setTarget(id, targetPos, SERVO_TARGET_SPEED_DEFAULT, SERVO_TARGET_ACC_DEFAULT);
                     busWritePending[bus] = true;
+                    servoReportRef[ch] = (int32_t)targetPos;
+                    servoReportRefValid[ch] = 1;
                 }
             }
         }
@@ -1055,14 +1334,14 @@ void taskSolver(void* parameter)
                     const int32_t servoPos =
                         (jointMotorCh >= 0) ? servoData.servoAngles[jointMotorCh] : absolutePosition[jointIndex];
                     releaseFaultActive = updateReleaseGuardState(&releaseGuards[jointIndex],
-                                                                 localTargets[jointIndex],
+                                                                 jointTargetDegForLoop[jointIndex],
                                                                  magAngles[jointIndex],
                                                                  servoPos,
                                                                  guardInputsValid);
                     holdByTendonGuard = shouldBlockReleaseByTendonGuard(
                         sharedData,
                         jointIndex,
-                        localTargets[jointIndex],
+                        jointTargetDegForLoop[jointIndex],
                         magAngles[jointIndex],
                         absolutePosition[jointIndex],
                         guardInputsValid
@@ -1101,6 +1380,10 @@ void taskSolver(void* parameter)
                         busWritePending[bus] = true;
                         jointCmdPos[jointIndex] = holdPos;
                         jointCmdValid[jointIndex] = 1;
+                        if (jointMotorCh >= 0) {
+                            servoReportRef[jointMotorCh] = (int32_t)holdPos;
+                            servoReportRefValid[jointMotorCh] = 1;
+                        }
                     }
 
                     if (jointIndex == kJoint16Index) {
@@ -1115,6 +1398,10 @@ void taskSolver(void* parameter)
                                 SERVO_TARGET_ACC_DEFAULT
                             );
                             busWritePending[joint16SecondaryMotor.busIndex] = true;
+                            if (secCh >= 0) {
+                                servoReportRef[secCh] = (int32_t)holdSec;
+                                servoReportRefValid[secCh] = 1;
+                            }
                         }
                     }
                     continue;
@@ -1128,6 +1415,10 @@ void taskSolver(void* parameter)
                         busWritePending[bus] = true;
                         jointCmdPos[jointIndex] = holdPos;
                         jointCmdValid[jointIndex] = 1;
+                        if (jointMotorCh >= 0) {
+                            servoReportRef[jointMotorCh] = (int32_t)holdPos;
+                            servoReportRefValid[jointMotorCh] = 1;
+                        }
                     }
 
                     if (jointIndex == kJoint16Index) {
@@ -1142,32 +1433,77 @@ void taskSolver(void* parameter)
                                 SERVO_TARGET_ACC_DEFAULT
                             );
                             busWritePending[joint16SecondaryMotor.busIndex] = true;
+                            if (secCh >= 0) {
+                                servoReportRef[secCh] = (int32_t)holdSec;
+                                servoReportRefValid[secCh] = 1;
+                            }
                         }
                     }
                     continue;
                 }
 
-                    const int16_t targetPos = clampServoPos(outPulses[jointIndex]);
+                // 关节 0→M00、1→M01：脉冲已由绳长(mm)经 McpRopeToPulse 换算；其余关节用 outPulses
+                int16_t targetPos;
+                if (mcpTendonPdActive && jointIndex == 0) {
+                    targetPos = clampServoPos(mcpPdMotorAbs[0]);
+                } else if (mcpTendonPdActive && jointIndex == 1) {
+                    targetPos = clampServoPos(mcpPdMotorAbs[1]);
+                } else {
+                    targetPos = clampServoPos(outPulses[jointIndex]);
+                }
                 pBus->setTarget(id, targetPos, SERVO_TARGET_SPEED_DEFAULT, SERVO_TARGET_ACC_DEFAULT);
                 busWritePending[bus] = true;
                 jointCmdPos[jointIndex] = targetPos;
                 jointCmdValid[jointIndex] = 1;
+                if (jointMotorCh >= 0) {
+                    servoReportRef[jointMotorCh] = (int32_t)targetPos;
+                    servoReportRefValid[jointMotorCh] = 1;
+                }
 
                 if (jointIndex == kJoint16Index) {
                     ServoBusManager* pSecBus = getBusByIndex(joint16SecondaryMotor.busIndex);
                     if (pSecBus) {
                         // joint16 拮抗下发：主舵机目标确定后，副舵机按反向映射与偏置补偿计算。
                         const int32_t secTarget = -((int32_t)targetPos) + kJoint16SecondaryOffset + kJoint16TensionBias;
+                        const int16_t secCmd = clampServoPos(secTarget);
                         pSecBus->setTarget(
                             joint16SecondaryMotor.servoID,
-                            clampServoPos(secTarget),
+                            secCmd,
                             SERVO_TARGET_SPEED_DEFAULT,
                             SERVO_TARGET_ACC_DEFAULT
                         );
                         busWritePending[joint16SecondaryMotor.busIndex] = true;
+                        const int secCh = findMotorChannel(joint16SecondaryMotor.busIndex, joint16SecondaryMotor.servoID);
+                        if (secCh >= 0) {
+                            servoReportRef[secCh] = (int32_t)secCmd;
+                            servoReportRefValid[secCh] = 1;
+                        }
                     }
                 }
             }
+        }
+
+        // 上报 0x03：与「本周期实际下发的舵机目标」对齐多圈量纲；未下发的通道仍用硬件估算。
+        for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++) {
+            if (servoData.onlineStatus[ch] == 0) {
+                continue;
+            }
+            const int16_t raw = (int16_t)servoRawData.servoRawPositions[ch];
+            if (servoReportRefValid[ch]) {
+                servoData.servoAngles[ch] = reconcileMultiturnAbsForHost(servoReportRef[ch], raw);
+            } else {
+                servoData.servoAngles[ch] = servoHwAbs[ch];
+            }
+        }
+
+        if (sharedData->servoAngleQueue) {
+            xQueueOverwrite(sharedData->servoAngleQueue, &servoData);
+        }
+        if (sharedData->servoRawQueue) {
+            xQueueOverwrite(sharedData->servoRawQueue, &servoRawData);
+        }
+        if (sharedData->servoTelemetryQueue) {
+            xQueueOverwrite(sharedData->servoTelemetryQueue, &telemetryData);
         }
 
         sharedData->reverse_release_fault_bitmap = buildReleaseFaultBitmap(releaseGuards);
@@ -1183,7 +1519,7 @@ void taskSolver(void* parameter)
                 debugData.jointIndex = jointIndex;
                 debugData.timestamp = millis();
                 debugData.valid = (mappedData.validFlags[jointIndex] != 0) ? 1 : 0;
-                debugData.targetDeg = localTargets[jointIndex];
+                debugData.targetDeg = jointTargetDegForLoop[jointIndex];
                 debugData.magActualDeg = magAngles[jointIndex];
                 debugData.loop1Output = angleSolver.getPidOutput(jointIndex, 0);
                 debugData.loop2Actual = (float)absolutePosition[jointIndex];

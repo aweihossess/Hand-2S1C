@@ -17,6 +17,7 @@ from protocol import (
     PACKET_TYPE_RELEASE_FAULT,
     PACKET_TYPE_SERVO_RAW,
     PACKET_TYPE_TACTILE,
+    PACKET_TYPE_MCP_ROPE_PD,
     RX_POLL_SLEEP,
     RX_QUEUE_MAXSIZE,
     SERIAL_TIMEOUT,
@@ -341,6 +342,10 @@ class LowerComputerComm:
                                 f"(status={status}, applied={applied_mode})."
                             )
                             self._stream_mode_ack_warned = True
+
+            elif pkt_type == PACKET_TYPE_MCP_ROPE_PD:
+                if len(payload) >= 1 and payload[0] == 0x01:
+                    print("[绳长PD] 已经激活PD模式")
 
         self._last_model = model
         return model if emitted else None

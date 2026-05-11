@@ -61,6 +61,8 @@ PACKET_TYPE_PROTO_ACK = 0x06        # 协议命令ACK
 PACKET_TYPE_FAULT_STATUS = 0x07     # 过载故障位图
 PACKET_TYPE_RELEASE_FAULT = 0x08    # 反绕释放保护故障位图
 PACKET_TYPE_SERVO_RAW = 0x09        # 22路舵机单圈raw位置
+PACKET_TYPE_TACTILE = 0x0A          # 触觉（与固件一致）
+PACKET_TYPE_MCP_ROPE_PD = 0x0B      # 绳长 PD 状态（负载首字节 0x01=已激活）
 
 
 # ===== 下行命令 (上位机 -> 下位机) =====
@@ -332,31 +334,38 @@ def build_angle_cmd(angles: List[float]) -> bytes:
     return _build_command_frame(CMD_ANGLE_CTRL, payload)
 
 
-def build_calib_data_cmd(zero_encoder_raw: List[int]) -> bytes:
+def build_calib_data_cmd(
+    zero_encoder_raw: List[int],
+    mechanism_motor_abs: Optional[List[int]] = None,
+) -> bytes:
     """
-    构建标定数据命令
-    格式: 21路float32 (小端)
-    
-    zero_encoder_raw 应该是 0-16383 范围内的值
+    构建标定数据命令 (CMD_CALIB_DATA / 0xCF)
+
+    - 基础负载: 21×float32 小端，磁编码器零点原始计数（0–16383）。
+    - 扩展负载（推荐）: 再接 22×int32 小端，机构零点姿态下各舵机多圈绝对位置
+      （与上行 0x03 包中 servoAngles 语义一致，与 MOTOR_COUNT 对齐）。
     """
     if len(zero_encoder_raw) != ENCODER_COUNT:
         raise ValueError(f"需要 {ENCODER_COUNT} 个编码器零值")
-    
-    # 确保所有值都在有效范围内
+
     normalized_vals = []
     for v in zero_encoder_raw:
         val = int(v)
-        # 确保在 0-16383 范围内
         if val < 0:
             val += 16384
         val = val % 16384
         normalized_vals.append(float(val))
-    
-    # 调试输出前5个值
-    print(f"[build_calib_data_cmd] 发送零点数据: {normalized_vals[:5]}...")
-    
-    payload = struct.pack(f"<{ENCODER_COUNT}f", *normalized_vals)
-    return _build_command_frame(CMD_CALIB_DATA, payload)
+
+    print(f"[build_calib_data_cmd] 发送磁编零点: {normalized_vals[:5]}...")
+    payload = bytearray(struct.pack(f"<{ENCODER_COUNT}f", *normalized_vals))
+
+    if mechanism_motor_abs is not None:
+        if len(mechanism_motor_abs) != MOTOR_COUNT:
+            raise ValueError(f"机构零点电机位置需要 {MOTOR_COUNT} 个 int32")
+        payload.extend(struct.pack(f"<{MOTOR_COUNT}i", *[int(x) for x in mechanism_motor_abs]))
+        print(f"[build_calib_data_cmd] 附带机构零点电机 abs 前3路: {list(mechanism_motor_abs[:3])}")
+
+    return _build_command_frame(CMD_CALIB_DATA, bytes(payload))
 
 
 def build_motor_pos_cmd(motor_pos_raw: List[int]) -> bytes:

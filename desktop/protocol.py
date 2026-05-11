@@ -22,6 +22,7 @@ PACKET_TYPE_FAULT_STATUS = 0x07
 PACKET_TYPE_RELEASE_FAULT = 0x08
 PACKET_TYPE_SERVO_RAW = 0x09
 PACKET_TYPE_TACTILE = 0x0A
+PACKET_TYPE_MCP_ROPE_PD = 0x0B  # rope-length PD status (payload[0]==1: activated)
 
 # Downstream commands (desktop -> device)
 CMD_CALIBRATE = 0xCA

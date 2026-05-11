@@ -2,6 +2,7 @@
 #include "ServoBusManager.h"
 #include "AngleSolver.h"
 #include "CalibrationTask.h"
+#include "HandCalibrationNvs.h"
 
 #include <string.h>
 
@@ -111,6 +112,7 @@ void System_Init() {
     memset(sharedData.motorTargetRaw, 0, sizeof(sharedData.motorTargetRaw));
     memset(sharedData.motorSweepTargetRaw, 0, sizeof(sharedData.motorSweepTargetRaw));
     memset(sharedData.calib_zero_raw_cache, 0, sizeof(sharedData.calib_zero_raw_cache));
+    memset(sharedData.mechanism_zero_motor_abs, 0, sizeof(sharedData.mechanism_zero_motor_abs));
     sharedData.motor_command_token = 0;
     sharedData.motor_sweep_command_token = 0;
     sharedData.joint_command_token = 0;
@@ -129,6 +131,16 @@ void System_Init() {
         sharedData.tendon_guard_sign[i] = 1;
     }
     sharedData.calib_zero_raw_valid = 0;
+    sharedData.mechanism_zero_motor_valid = 0;
+    sharedData.mcp_rope_pd_notify_host = 0;
+
+    handCalibrationNvsLoad(&sharedData);
+    if (sharedData.calib_zero_raw_valid || sharedData.mechanism_zero_motor_valid) {
+        Serial.printf(
+            "[CalibNVS] loaded enc=%u mot=%u\n",
+            (unsigned)sharedData.calib_zero_raw_valid,
+            (unsigned)sharedData.mechanism_zero_motor_valid);
+    }
 
     // 4) 初始化全部舵机总线，保持与现有接线假设一致。
     servoBus0.begin(0, 21, 20, 1000000);

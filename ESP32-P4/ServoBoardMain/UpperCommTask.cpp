@@ -2,6 +2,7 @@
 #include "CanCommTask.h"
 #include "TaskSharedData.h"
 #include "CalibrationTask.h"
+#include "HandCalibrationNvs.h"
 
 #include <math.h>
 #include <string.h>
@@ -26,6 +27,7 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PACKET_TYPE_RELEASE_FAULT 0x08
 #define PACKET_TYPE_SERVO_RAW 0x09
 #define PACKET_TYPE_TACTILE 0x0A
+#define PACKET_TYPE_MCP_ROPE_PD 0x0B
 
 #define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
 
@@ -49,6 +51,9 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define SENSOR_STREAM_MODE_SIGNED_I16 1
 
 static const size_t kFloatPayloadBytes = ENCODER_TOTAL_NUM * sizeof(float);
+// CMD_CALIB_DATA 扩展负载：21×float + 22×int32（机构零点对应多圈电机绝对位置，小端）。
+static const size_t kCalibDataFullPayloadBytes =
+    kFloatPayloadBytes + SERVO_TOTAL_NUM * sizeof(int32_t);
 static const size_t kMotorPosPayloadBytes = SERVO_TOTAL_NUM * sizeof(uint16_t);
 static const size_t kTendonGuardPayloadBytes = ENCODER_TOTAL_NUM * 4;
 static const size_t kSerialRxBufferSize = 512;
@@ -140,6 +145,21 @@ static void sendReleaseFaultPacket(uint32_t releaseFaultBitmap)
     buffer[idx++] = (uint8_t)(releaseFaultBitmap & 0xFF);
     buffer[idx++] = PROTOCOL_TAIL;
     buffer[1] = (uint8_t)(idx - 2); // LEN = 类型字节 + 负载 + 尾字节
+    Serial.write(buffer, idx);
+}
+
+// 绳长 PD（M00/M01）由非激活→激活时上报（负载首字节 0x01 = 已激活）。
+static void sendMcpRopePdActivatedPacket(void)
+{
+    uint8_t buffer[8];
+    size_t idx = 0;
+
+    buffer[idx++] = PROTOCOL_HEADER;
+    buffer[idx++] = 0x00;
+    buffer[idx++] = PACKET_TYPE_MCP_ROPE_PD;
+    buffer[idx++] = 0x01;
+    buffer[idx++] = PROTOCOL_TAIL;
+    buffer[1] = (uint8_t)(idx - 2);
     Serial.write(buffer, idx);
 }
 
@@ -291,6 +311,25 @@ static bool parseFloatArrayLittleEndian(const uint8_t* payload, size_t payloadLe
     return true;
 }
 
+// 解析下行负载中的 int32 数组（小端），从 payload 起始字节开始。
+static bool parseInt32ArrayLittleEndian(const uint8_t* payload, size_t payloadLen, int32_t* outValues, uint8_t count)
+{
+    if (!payload || !outValues) {
+        return false;
+    }
+    const size_t required = (size_t)count * sizeof(int32_t);
+    if (payloadLen < required) {
+        return false;
+    }
+    for (uint8_t i = 0; i < count; i++)
+    {
+        const uint8_t* p = payload + (size_t)i * sizeof(int32_t);
+        uint32_t u = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        memcpy(&outValues[i], &u, sizeof(int32_t));
+    }
+    return true;
+}
+
 // 解析下行负载中的 int16 数组（大端）。
 static bool parseInt16ArrayBigEndian(const uint8_t* payload, size_t payloadLen, int32_t* outValues, uint8_t count)
 {
@@ -363,7 +402,7 @@ static void applyTendonGuardConfig(TaskSharedData_t* sharedData,
 static void applyTargetAngles(TaskSharedData_t* sharedData, const float* angles, uint8_t count)
 {
     if (count > ENCODER_TOTAL_NUM) count = ENCODER_TOTAL_NUM;
-    if (xSemaphoreTake(sharedData->targetAnglesMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+    if (xSemaphoreTake(sharedData->targetAnglesMutex, pdMS_TO_TICKS(100)) == pdTRUE)
     {
         for (uint8_t i = 0; i < count; i++)
         {
@@ -447,6 +486,26 @@ static void cacheCalibZeroRaw(TaskSharedData_t* sharedData, const float* values,
     sharedData->calib_zero_raw_valid = 1;
 }
 
+// 缓存机构零点对应的多圈电机绝对位置（int32，与 0x03 遥测一致）。
+static void cacheMechanismMotorAbs(TaskSharedData_t* sharedData, const int32_t* values, uint8_t count)
+{
+    if (!sharedData || !values) {
+        return;
+    }
+    if (count > SERVO_TOTAL_NUM) {
+        count = SERVO_TOTAL_NUM;
+    }
+    for (uint8_t i = 0; i < count; i++)
+    {
+        sharedData->mechanism_zero_motor_abs[i] = values[i];
+    }
+    for (uint8_t i = count; i < SERVO_TOTAL_NUM; i++)
+    {
+        sharedData->mechanism_zero_motor_abs[i] = 0;
+    }
+    sharedData->mechanism_zero_motor_valid = 1;
+}
+
 // 返回命令负载长度；不包含 CMD 自身。
 static size_t getCommandPayloadLength(uint8_t cmd)
 {
@@ -460,7 +519,8 @@ static size_t getCommandPayloadLength(uint8_t cmd)
         case CMD_ANGLE_CTRL:
             return kFloatPayloadBytes;
         case CMD_CALIB_DATA:
-            return kFloatPayloadBytes;
+            // 实际长度为 kFloatPayloadBytes 或 kCalibDataFullPayloadBytes，由接收端单独校验。
+            return (size_t)-1;
         case CMD_MOTOR_POS:
             return kMotorPosPayloadBytes;
         case CMD_MOTOR_POS_SWEEP:
@@ -550,10 +610,23 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_CALIB_DATA)
     {
+        const size_t payloadBytes = frameLen - 1;
         float zeroRaw[ENCODER_TOTAL_NUM] = {0.0f};
-        if (parseFloatArrayLittleEndian(frame + 1, frameLen - 1, zeroRaw, ENCODER_TOTAL_NUM)) {
-            cacheCalibZeroRaw(sharedData, zeroRaw, ENCODER_TOTAL_NUM);
+        if (!parseFloatArrayLittleEndian(frame + 1, payloadBytes, zeroRaw, ENCODER_TOTAL_NUM)) {
+            return;
         }
+        cacheCalibZeroRaw(sharedData, zeroRaw, ENCODER_TOTAL_NUM);
+
+        if (payloadBytes >= kCalibDataFullPayloadBytes) {
+            int32_t motorAbs[SERVO_TOTAL_NUM] = {0};
+            const uint8_t* motorPayload = frame + 1 + kFloatPayloadBytes;
+            const size_t motorPayloadLen = payloadBytes - kFloatPayloadBytes;
+            if (parseInt32ArrayLittleEndian(motorPayload, motorPayloadLen, motorAbs, SERVO_TOTAL_NUM)) {
+                cacheMechanismMotorAbs(sharedData, motorAbs, SERVO_TOTAL_NUM);
+            }
+        }
+
+        handCalibrationNvsSave(sharedData);
         return;
     }
 
@@ -702,9 +775,15 @@ void taskUpperComm(void* parameter)
             }
 
             const uint8_t cmd = rxBuffer[parseOffset + 2];
-            const size_t payloadLen = (size_t)wireLen - 2; // CMD + payload + tail
+            const size_t payloadLen = (size_t)wireLen - 2; // 仅 CMD 与 FF 之间的数据字节数
             const size_t expectedPayloadLen = getCommandPayloadLength(cmd);
-            if (expectedPayloadLen == (size_t)-1 || expectedPayloadLen != payloadLen)
+            bool payloadLenOk = false;
+            if (cmd == CMD_CALIB_DATA) {
+                payloadLenOk = (payloadLen == kFloatPayloadBytes) || (payloadLen == kCalibDataFullPayloadBytes);
+            } else {
+                payloadLenOk = (expectedPayloadLen != (size_t)-1 && expectedPayloadLen == payloadLen);
+            }
+            if (!payloadLenOk)
             {
                 parseOffset += frameLen;
                 continue;
@@ -796,6 +875,11 @@ void taskUpperComm(void* parameter)
             lastReleaseFaultSent = releaseFaultBitmap;
             lastReleaseFaultSentMs = nowMs;
             releaseFaultSentInitialized = true;
+        }
+
+        if (sharedData->mcp_rope_pd_notify_host) {
+            sharedData->mcp_rope_pd_notify_host = 0;
+            sendMcpRopePdActivatedPacket();
         }
 
         vTaskDelay(pdMS_TO_TICKS(5));

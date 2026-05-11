@@ -6,7 +6,7 @@
 import queue
 import threading
 import time
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 import serial
 import serial.tools.list_ports
@@ -23,6 +23,7 @@ from .protocol import (
     SENSOR_STREAM_MODE_SIGNED_I16,
     CMD_SENSOR_STREAM_MODE,
     PROTO_ACK_STATUS_OK,
+    PACKET_TYPE_MCP_ROPE_PD,
     parse_calib_ack,
     parse_fault_status_packet,
     parse_frame,
@@ -45,13 +46,16 @@ from .protocol import (
     build_reset_motor_abs_cmd,
     build_stream_mode_cmd,
     build_tendon_guard_cmd,
-    build_pid_params_cmd,
 )
 from .data_models import HandModel, MotorState
 
 
 # 命令类型: 字符串命令 / HandModel / 元组命令
 SendCmd = Union[str, HandModel, tuple]
+
+
+# 与下位机 PACKET_TYPE_MCP_ROPE_PD 及「简易触发」共用同一提示文案
+MCP_ROPE_PD_NOTIFY_LINE = "[绳长PD] 已经激活PD模式（下位机 M00/M01 绳空间闭环）"
 
 
 def list_ports() -> List[tuple]:
@@ -73,10 +77,20 @@ class LowerComputerComm:
     管理串口连接，使用独立的RX和TX线程
     """
     
-    def __init__(self, port: str, baudrate: int = BAUDRATE):
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = BAUDRATE,
+        serial_notify: Optional[Callable[[str], None]] = None,
+        rope_pd_easy_notify: Optional[Callable[[], bool]] = None,
+    ):
         self.port = (port or "").strip()
         self.baudrate = baudrate
         self.serial: Optional[serial.Serial] = None
+        self._serial_notify: Optional[Callable[[str], None]] = serial_notify
+        # 为 true 时：关节角度模式 + START 后，首次 E0/E1 有效 0x01 也弹出与 0x0B 相同提示（无需等固件去抖包）
+        self._rope_pd_easy_notify: Optional[Callable[[], bool]] = rope_pd_easy_notify
+        self._mcp_rope_pd_message_sent: bool = False
         
         # 接收和发送队列
         self.rx_queue: queue.Queue = queue.Queue(maxsize=RX_QUEUE_MAXSIZE)
@@ -152,6 +166,36 @@ class LowerComputerComm:
         """检查连接状态"""
         return self.serial is not None and self.serial.is_open and self.running
     
+    def reset_mcp_rope_pd_message_gate(self) -> None:
+        """允许再次弹出绳长 PD 提示（固件 0x0B 与关节模式简易触发共用同一门闩）。"""
+        self._mcp_rope_pd_message_sent = False
+    
+    def _emit_mcp_rope_pd_notify(self) -> None:
+        if self._mcp_rope_pd_message_sent:
+            return
+        self._mcp_rope_pd_message_sent = True
+        print(MCP_ROPE_PD_NOTIFY_LINE)
+        if self._serial_notify:
+            try:
+                self._serial_notify(MCP_ROPE_PD_NOTIFY_LINE)
+            except Exception:
+                pass
+    
+    def _try_mcp_rope_pd_easy_hint(self, errors: List[bool]) -> None:
+        """关节角度模式 + START 后：首次 E0/E1 无断连的 0x01 即提示（与 0x0B 同文案）。"""
+        if self._mcp_rope_pd_message_sent or not self._rope_pd_easy_notify:
+            return
+        try:
+            if not self._rope_pd_easy_notify():
+                return
+        except Exception:
+            return
+        if len(errors) < 2:
+            return
+        if errors[0] or errors[1]:
+            return
+        self._emit_mcp_rope_pd_notify()
+    
     def _rx_loop(self):
         """接收线程主循环"""
         while self.running and self.serial and self.serial.is_open:
@@ -223,6 +267,8 @@ class LowerComputerComm:
                     
                     model.has_sensor_data = True
                     emitted = True
+                    if errors:
+                        self._try_mcp_rope_pd_easy_hint(errors)
             
             # PACKET_TYPE_CALIB_ACK (0x02) - 标定确认
             elif pkt_type == 0x02:
@@ -316,6 +362,10 @@ class LowerComputerComm:
                         if status != PROTO_ACK_STATUS_OK and not self._stream_mode_ack_warned:
                             print(f"协议警告: 流模式被拒绝 (status={status}, applied={applied_mode})")
                             self._stream_mode_ack_warned = True
+
+            elif pkt_type == PACKET_TYPE_MCP_ROPE_PD:
+                if len(payload) >= 1 and payload[0] == 0x01:
+                    self._emit_mcp_rope_pd_notify()
         
         self._last_model = model
         return model if emitted else None
@@ -405,6 +455,11 @@ class LowerComputerComm:
             return build_calibrate_cmd()
         
         # 元组命令
+        if isinstance(cmd, tuple) and len(cmd) == 3:
+            cmd_type, enc_zeros, motor_abs = cmd
+            if cmd_type == "calib_data":
+                return build_calib_data_cmd(enc_zeros, mechanism_motor_abs=list(motor_abs))
+
         if isinstance(cmd, tuple) and len(cmd) == 2:
             cmd_type, cmd_data = cmd
             
@@ -424,9 +479,6 @@ class LowerComputerComm:
                 return build_stream_mode_cmd(cmd_data)
             if cmd_type == "tendon_guard":
                 return build_tendon_guard_cmd(cmd_data)
-            if cmd_type == "pid_params":
-                outer_params, inner_params = cmd_data
-                return build_pid_params_cmd(outer_params, inner_params)
         
         # HandModel 命令 (发送目标角度)
         if isinstance(cmd, HandModel):
