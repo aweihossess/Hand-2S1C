@@ -1,0 +1,24 @@
+﻿*.zip
+*.mp4
+
+# OS/editor noise
+.DS_Store
+.vscode/
+
+# Python cache/runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local experiment logs and captures
+run_data/
+*.log
+
+# Build/output artifacts
+build/
+dist/
+*.bin
+*.elf
+*.map
