@@ -3,6 +3,8 @@
 #include <math.h>
 #include <string.h>
 
+static uint32_t g_lastAngleCommandDiagMs = 0;
+
 // Clamp a host absolute motor command to the firmware multi-turn range.
 int16_t clampServoAbsCommand(int32_t value)
 {
@@ -33,6 +35,16 @@ void upperApplyTargetAngles(TaskSharedData_t* sharedData, const float* angles, u
         // 增加命令令牌，切换控制模式到关节模式
         sharedData->joint_command_token++;
         sharedData->control_mode = CONTROL_MODE_JOINT;
+        const uint32_t nowMs = millis();
+        if (nowMs - g_lastAngleCommandDiagMs >= 200) {
+            g_lastAngleCommandDiagMs = nowMs;
+            Serial.printf("[ANGLE CMD] token=%lu J0=%.2f J1=%.2f J2=%.2f J3=%.2f\r\n",
+                          (unsigned long)sharedData->joint_command_token,
+                          (double)sharedData->targetAngles[0],
+                          (double)sharedData->targetAngles[1],
+                          (double)sharedData->targetAngles[2],
+                          (double)sharedData->targetAngles[3]);
+        }
         xSemaphoreGive(lock);
     }
 }

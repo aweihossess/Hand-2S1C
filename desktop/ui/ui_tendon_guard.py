@@ -128,6 +128,11 @@ class TendonGuard:
             return guarded, blocked, ""
 
         for joint_idx in range(ENCODER_COUNT):
+            # MCP J0/J1 are controlled by a coupled two-tendon model. The old
+            # single-motor release guard can rewrite one target while the other
+            # stays active, which breaks the coupled solver.
+            if joint_idx <= 1:
+                continue
             cfg = self.config[joint_idx] if joint_idx < len(self.config) else {}
             if not bool(cfg.get("enabled", False)):
                 continue

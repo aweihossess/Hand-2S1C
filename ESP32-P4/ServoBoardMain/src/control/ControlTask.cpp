@@ -27,10 +27,11 @@ static const float kMagCountLpfAlpha = 0.25f;
 static const int32_t kJointZeroHomingToleranceCounts = 40;
 static const uint8_t kJointZeroHomingStableCycles = 20;
 static const int32_t kJointCommandMaxStepCounts = 200;
+static const int32_t kMcpCommandMaxStepCounts = 80;
 static const float kJointMaxTrackErrorDeg = 15.0f;
 static const uint16_t kJointTargetSpeed = 600;
 static const uint8_t kJointTargetAcc = 40;
-static const int32_t kMcpJointModeMotorAbsGuardCounts = 500;
+static const int32_t kMcpJointModeMotorAbsGuardCounts = 1200;
 static const uint32_t kJointControlDiagIntervalMs = 200;
 static const bool kEnableReleaseGuard = false;
 
@@ -671,10 +672,7 @@ void controlTask(void* parameter)
                             const int mCh = findMotorChannel(mBus, mId);
                             const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
                             if (mOnline) {
-                                const int16_t holdPos = clampServoPos(absolutePosition[tendonIndex]);
-                                appendServoTarget(&targetBatch, mBus, mId, holdPos,
-                                    kJointTargetSpeed, kJointTargetAcc);
-                                jointCmdPos[tendonIndex] = holdPos;
+                                jointCmdPos[tendonIndex] = clampServoPos(absolutePosition[tendonIndex]);
                                 jointCmdValid[tendonIndex] = 1;
                             }
                         }
@@ -729,7 +727,25 @@ void controlTask(void* parameter)
                         for (uint8_t tendonIndex = 0; tendonIndex <= 1; tendonIndex++) {
                             const uint8_t mBus = jointMap[tendonIndex].busIndex;
                             const uint8_t mId = jointMap[tendonIndex].servoID;
-                            const int16_t targetPos = clampServoPos(outPulses[tendonIndex]);
+                            const int mCh = findMotorChannel(mBus, mId);
+                            const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
+                            if (!mOnline) {
+                                continue;
+                            }
+                            int32_t limitedTarget = outPulses[tendonIndex];
+                            const int32_t currentPos = absolutePosition[tendonIndex];
+                            const int32_t delta = limitedTarget - currentPos;
+                            if (delta > kMcpCommandMaxStepCounts) {
+                                limitedTarget = currentPos + kMcpCommandMaxStepCounts;
+                            } else if (delta < -kMcpCommandMaxStepCounts) {
+                                limitedTarget = currentPos - kMcpCommandMaxStepCounts;
+                            }
+                            if (limitedTarget > kMcpJointModeMotorAbsGuardCounts) {
+                                limitedTarget = kMcpJointModeMotorAbsGuardCounts;
+                            } else if (limitedTarget < -kMcpJointModeMotorAbsGuardCounts) {
+                                limitedTarget = -kMcpJointModeMotorAbsGuardCounts;
+                            }
+                            const int16_t targetPos = clampServoPos(limitedTarget);
                             appendServoTarget(&targetBatch, mBus, mId, targetPos,
                                 kJointTargetSpeed, kJointTargetAcc);
                             jointCmdPos[tendonIndex] = targetPos;

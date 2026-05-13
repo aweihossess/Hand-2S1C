@@ -11,7 +11,7 @@ static const float kDefaultQFbMaxDeg = 360.0f;
 static const float kDegToRad = 0.017453292519943295f;
 static const float kControlPeriodSec = 0.01f;
 static const float kDefaultTendonMotorOutputLimit = 4096.0f;
-static const float kMcpMotorAbsLimitCounts = 2000.0f;
+static const float kMcpMotorAbsLimitCounts = 1200.0f;
 
 static const uint8_t kMcpLTendonIndex = 0;
 static const uint8_t kMcpRTendonIndex = 1;
