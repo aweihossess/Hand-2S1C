@@ -1412,10 +1412,7 @@ class ControlPanel(QtWidgets.QWidget):
         self._motor_last_slider[idx] = new_single
         self._mark_motor_target_user_set(idx)
         self._set_motor_relative_target_widget(idx, mapped)
-        try:
-            self._send_motor_abs_from_ui(f"Slider M{idx}")
-        except Exception as exc:
-            self._set_status(f"Motor slider send failed: {exc}")
+        self._set_status(f"Motor target edited (M{idx:02d}); press Send to move")
 
     def _step_motor_target(self, idx: int, delta: int) -> None:
         if not self._interaction_enabled:
@@ -1439,7 +1436,7 @@ class ControlPanel(QtWidgets.QWidget):
         self._motor_last_slider[idx] = new_sl
         self._mark_motor_target_user_set(idx)
         self._set_motor_relative_target_widget(idx, self._motor_abs_pos[idx])
-        self._send_motor_abs_from_ui(f"{'Step+' if delta > 0 else 'Step-'} M{idx}")
+        self._set_status(f"Motor target edited (M{idx:02d}); press Send to move")
 
     def _normalize_test_joint_value(self, text: str) -> str:
         text = str(text or "").strip()
@@ -1533,6 +1530,8 @@ class ControlPanel(QtWidgets.QWidget):
             return False
 
     def _on_start_test(self) -> None:
+        self._set_status("Test mode disabled; use Direct Motor or Joint Angle Send")
+        return
         if not self._interaction_enabled:
             self._set_status("Start Test blocked: Hand Manual must be ON")
             return
@@ -1596,6 +1595,8 @@ class ControlPanel(QtWidgets.QWidget):
         return joint_idx, clamped, step_s
 
     def _on_start_ff_test(self) -> None:
+        self._set_status("Feedforward test disabled; use Direct Motor or Joint Angle Send")
+        return
         if not self._interaction_enabled:
             self._set_status("Feedforward Test blocked: Hand Manual must be ON")
             return
@@ -1651,6 +1652,8 @@ class ControlPanel(QtWidgets.QWidget):
         return joint_idx, lo, hi, freq
 
     def _on_start_tri_test(self) -> None:
+        self._set_status("Triangle test disabled; use Direct Motor or Joint Angle Send")
+        return
         if not self._interaction_enabled:
             self._set_status("Triangle Wave Test blocked: Hand Manual must be ON")
             return
@@ -1684,6 +1687,8 @@ class ControlPanel(QtWidgets.QWidget):
                 self.context.emit_action(f"Triangle Wave Test stopped ({reason})")
 
     def _on_start_local_test(self) -> None:
+        self._set_status("Local test disabled; use Direct Motor or Joint Angle Send")
+        return
         if not self._interaction_enabled:
             self._set_status("Local Test blocked: Hand Manual must be ON")
             return

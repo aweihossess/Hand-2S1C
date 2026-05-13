@@ -475,7 +475,8 @@ void controlTask(void* parameter)
         const bool directMotorCommandActive =
             normalOutputAllowed &&
             (commandSnapshot.controlMode == CONTROL_MODE_DIRECT_MOTOR) &&
-            directMotorCommandFresh;
+            (motorDirectSource == MOTOR_DIRECT_SOURCE_ABSOLUTE) &&
+            (commandSnapshot.motorCommandToken != 0);
         if (jointControlActive && !prevJointControlActive) {
             jointZeroHomingActive = false;
             jointZeroHomingStableCount = 0;
@@ -511,11 +512,16 @@ void controlTask(void* parameter)
         {
             // 鐩存帶妯″紡锛氫粎涓嬪彂涓绘満涓嬪彂鐨勭數鏈簉aw/sweep/abs鐩爣
             if (directMotorCommandActive) {
+                if (motorDirectSource != MOTOR_DIRECT_SOURCE_ABSOLUTE) {
+                    vTaskDelayUntil(&lastWakeTime, solverPeriodTicks);
+                    continue;
+                }
                 for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
                 {
                     const uint8_t bus = motorMap[ch].busIndex;
                     const uint8_t id  = motorMap[ch].servoID;
                     if (bus >= NUM_BUSES) continue;
+                    if (servoData.onlineStatus[ch] == 0) continue;
 
                     // joint16涓诲壇鐗规畩鏁呴殰鍏煎
                     const bool isJoint16Motor = ((int)ch == joint16PrimaryCh) || ((int)ch == joint16SecondaryCh);
@@ -547,6 +553,11 @@ void controlTask(void* parameter)
                         } else if (motorDirectSource == MOTOR_DIRECT_SOURCE_ABSOLUTE) {
                             sweepAnchorValid[ch] = false;
                             targetPos = clampServoPos((int32_t)commandSnapshot.motorTargetRaw[ch]);
+                            const int32_t currentPos = servoData.servoAngles[ch];
+                            const int32_t delta = (int32_t)targetPos - currentPos;
+                            if (delta > -2 && delta < 2) {
+                                continue;
+                            }
                         } else {
                             sweepAnchorValid[ch] = false;
                             targetPos = expandSingleTurnTargetNearCurrent(

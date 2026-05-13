@@ -83,7 +83,14 @@ public:
         if (_positionModeEnabled[id]) {
             return;
         }
-        _sms.ServoMode(id);
+        _sms.EnableTorque(id, 0);
+        delay(SERVO_MULTI_TURN_CONFIG_DELAY_MS);
+        _sms.unLockEprom(id);
+        delay(SERVO_MULTI_TURN_CONFIG_DELAY_MS);
+        _sms.WheelMode(id);
+        delay(SERVO_MULTI_TURN_CONFIG_DELAY_MS);
+        _sms.LockEprom(id);
+        delay(SERVO_MULTI_TURN_CONFIG_DELAY_MS);
         _positionModeEnabled[id] = true;
     }
 
@@ -107,6 +114,7 @@ public:
         }
         _sms.EnableTorque(id, 0);
         _torqueEnabled[id] = false;
+        _positionModeEnabled[id] = false;
     }
 
     void calibrateCurrentPositionAsZero(uint8_t id)
@@ -131,12 +139,16 @@ public:
         if (_writeCount >= MAX_SERVOS_PER_BUS) {
             return;
         }
-        int32_t hardwarePosition = (int32_t)position + _softwareZeroOffset[id];
-        if (hardwarePosition < -30719) hardwarePosition = -30719;
-        if (hardwarePosition > 30719) hardwarePosition = 30719;
+        const int32_t currentMotorPosition =
+            _feedback[id].hardwareAbsolutePosition - _softwareZeroOffset[id];
+        const int32_t error = (int32_t)position - currentMotorPosition;
+        int32_t speedCommand = error;
+        if (speedCommand > (int32_t)speed) speedCommand = speed;
+        if (speedCommand < -(int32_t)speed) speedCommand = -(int32_t)speed;
+        if (speedCommand > -2 && speedCommand < 2) speedCommand = 0;
 
         _writeIDs[_writeCount] = id;
-        _writePos[_writeCount] = (int16_t)hardwarePosition;
+        _writePos[_writeCount] = (int16_t)speedCommand;
         _writeSpd[_writeCount] = speed;
         _writeAcc[_writeCount] = acc;
         _writeCount++;
@@ -147,7 +159,7 @@ public:
         if (_writeCount == 0 || !_serial) {
             return;
         }
-        _sms.SyncWritePosEx(_writeIDs, _writeCount, _writePos, _writeSpd, _writeAcc);
+        _sms.SyncWriteSpe(_writeIDs, _writeCount, _writePos, _writeAcc);
         _writeCount = 0;
     }
 

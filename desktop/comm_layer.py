@@ -682,9 +682,9 @@ class LowerComputerComm:
         if isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "calib_data":
             return build_calib_data_cmd(cmd[1])
         if isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "motor_pos":
-            return build_motor_pos_cmd(cmd[1])
+            return None
         if isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "motor_pos_sweep":
-            return build_motor_pos_sweep_cmd(cmd[1])
+            return None
         if isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "motor_pos_abs":
             return build_motor_pos_abs_cmd(cmd[1])
         if isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "angle_live":
@@ -692,11 +692,11 @@ class LowerComputerComm:
         if isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "stream_mode":
             return build_stream_mode_cmd(cmd[1])
         if isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "local_test_params":
-            return build_local_test_params_cmd(cmd[1], cmd[2])
+            return None
         if cmd == "local_test_start":
-            return build_local_test_start_cmd()
+            return None
         if cmd == "local_test_stop":
-            return build_local_test_stop_cmd()
+            return None
         if cmd == "servo_internal_zero":
             return build_servo_internal_zero_cmd()
         if cmd == "start":

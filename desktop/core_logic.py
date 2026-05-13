@@ -180,6 +180,7 @@ class HandController:
             self.comm.send_command(("angle_live", list(angles)))
 
     def set_motor_positions_raw(self, motor_pos_raw: List[int]):
+        return
         """设置 MOTOR_COUNT 路电机目标编码器原始值，DIRECT_MOTOR 模式；暂停时不发送"""
         if self._paused:
             return
@@ -191,6 +192,7 @@ class HandController:
             self.comm.send_command(("motor_pos", raw))
 
     def set_motor_positions_raw_sweep(self, motor_pos_raw: List[int]):
+        return
         """设置 MOTOR_COUNT 路电机滑条扫动目标，DIRECT_MOTOR 模式；暂停时不发送"""
         if self._paused:
             return
