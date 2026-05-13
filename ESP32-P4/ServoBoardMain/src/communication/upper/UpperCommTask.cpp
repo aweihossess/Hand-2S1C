@@ -699,9 +699,12 @@ void upperCommunicationTask(void* parameter)
         }
 
         JointDebugData_t jointDebugData;
-        while (xQueueReceive(sharedData->jointDebugQueue, &jointDebugData, 0) == pdTRUE)
+        uint8_t jointDebugSent = 0;
+        while (jointDebugSent < 2 &&
+               xQueueReceive(sharedData->jointDebugQueue, &jointDebugData, 0) == pdTRUE)
         {
             sendDataPacket(NULL, NULL, NULL, NULL, NULL, NULL, NULL, &jointDebugData);
+            jointDebugSent++;
             sentPacket = true;
         }
 

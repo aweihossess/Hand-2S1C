@@ -33,6 +33,7 @@ static const uint16_t kJointTargetSpeed = 600;
 static const uint8_t kJointTargetAcc = 40;
 static const int32_t kMcpJointModeMotorAbsGuardCounts = 1200;
 static const uint32_t kJointControlDiagIntervalMs = 200;
+static const uint32_t kJointDebugIntervalMs = 50;
 static const bool kEnableReleaseGuard = false;
 
 static int16_t clampMappedCountForProtocol(int32_t value)
@@ -200,6 +201,7 @@ void controlTask(void* parameter)
 
     TickType_t lastWakeTime = xTaskGetTickCount();    // 瀹氭椂瑙﹀彂tick
     const TickType_t solverPeriodTicks = pdMS_TO_TICKS(10);   // 鎺у埗鍛ㄦ湡闀垮害10ms
+    uint32_t lastJointDebugMs = 0;
     bool prevMotorOnline[SERVO_TOTAL_NUM]  = {false};
     bool hotplugHoldMotor[SERVO_TOTAL_NUM] = {false};
     uint32_t lastMotorCommandToken      = commandSnapshot.motorCommandToken;
@@ -915,9 +917,10 @@ void controlTask(void* parameter)
             sharedData->reverse_release_fault_bitmap = 0;
         }
 
-        // 璋冭瘯鍏宠妭鏁版嵁杈撳嚭
-        if (sharedData->jointDebugQueue)
+        const uint32_t debugNowMs = millis();
+        if (sharedData->jointDebugQueue && (debugNowMs - lastJointDebugMs) >= kJointDebugIntervalMs)
         {
+            lastJointDebugMs = debugNowMs;
             for (uint8_t di = 0; di < kDebugJointCount; di++)
             {
                 const uint8_t jointIndex = kDebugJointIndices[di];
@@ -952,6 +955,6 @@ void controlTask(void* parameter)
         if (sharedData->servoTargetQueue && targetBatch.count > 0)
             xQueueOverwrite(sharedData->servoTargetQueue, &targetBatch);
 
-        // 淇濊瘉绛夊懆鏈熻皟搴?        vTaskDelayUntil(&lastWakeTime, solverPeriodTicks);
+        vTaskDelayUntil(&lastWakeTime, solverPeriodTicks);
     }
 }
