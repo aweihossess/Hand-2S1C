@@ -434,6 +434,113 @@ static void handleLegacySingleByteCommand(TaskSharedData_t* sharedData, uint8_t 
     }
 }
 
+static void requestServoInternalZero(TaskSharedData_t* sharedData)
+{
+    if (!sharedData) {
+        return;
+    }
+    sharedData->control_enabled = 0;
+    sharedData->servo_target_owner = SERVO_TARGET_OWNER_NONE;
+    sharedData->system_state = SYSTEM_STATE_STOPPED;
+    SemaphoreHandle_t lock = sharedData->commandStateMutex ? sharedData->commandStateMutex : sharedData->targetAnglesMutex;
+    if (!lock || xSemaphoreTake(lock, pdMS_TO_TICKS(10)) == pdTRUE) {
+        memset(sharedData->targetAngles, 0, sizeof(sharedData->targetAngles));
+        memset(sharedData->motorTargetRaw, 0, sizeof(sharedData->motorTargetRaw));
+        memset(sharedData->motorSweepTargetRaw, 0, sizeof(sharedData->motorSweepTargetRaw));
+        sharedData->joint_command_token = 0;
+        sharedData->motor_command_token = 0;
+        sharedData->motor_sweep_command_token = 0;
+        sharedData->motor_direct_command_generation++;
+        sharedData->motor_direct_command_source = MOTOR_DIRECT_SOURCE_NONE;
+        sharedData->control_mode = CONTROL_MODE_JOINT;
+        if (lock) {
+            xSemaphoreGive(lock);
+        }
+    }
+    if (sharedData->servoTargetQueue) {
+        xQueueReset(sharedData->servoTargetQueue);
+    }
+    sharedData->servo_internal_zero_token++;
+    sendProtoAckPacket(CMD_SERVO_INTERNAL_ZERO, 0, PROTO_ACK_STATUS_OK);
+}
+
+static bool textEquals(const char* value, const char* expected)
+{
+    if (!value || !expected) {
+        return false;
+    }
+    while (*value && *expected) {
+        if (*value != *expected) {
+            return false;
+        }
+        value++;
+        expected++;
+    }
+    return *value == '\0' && *expected == '\0';
+}
+
+static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* line, size_t len)
+{
+    if (!sharedData || !line || len == 0) {
+        return false;
+    }
+
+    while (len > 0 && (line[0] == ' ' || line[0] == '\t' || line[0] == '\r' || line[0] == '\n')) {
+        line++;
+        len--;
+    }
+    while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t' || line[len - 1] == '\r' || line[len - 1] == '\n')) {
+        len--;
+    }
+    if (len == 0 || len >= 32) {
+        return false;
+    }
+
+    char cmd[32];
+    for (size_t i = 0; i < len; i++) {
+        char c = (char)line[i];
+        if (c >= 'A' && c <= 'Z') {
+            c = (char)(c - 'A' + 'a');
+        }
+        cmd[i] = c;
+    }
+    cmd[len] = '\0';
+
+    if (textEquals(cmd, "start") || textEquals(cmd, "enable") || textEquals(cmd, "run")) {
+        postSystemEvent(sharedData, SYSTEM_EVENT_START);
+        Serial.println("<<<CMD:START>>>");
+        return true;
+    }
+    if (textEquals(cmd, "stop") || textEquals(cmd, "disable") || textEquals(cmd, "halt")) {
+        postSystemEvent(sharedData, SYSTEM_EVENT_STOP);
+        Serial.println("<<<CMD:STOP>>>");
+        return true;
+    }
+    if (textEquals(cmd, "reset")) {
+        postSystemEvent(sharedData, SYSTEM_EVENT_RESET);
+        Serial.println("<<<CMD:RESET>>>");
+        return true;
+    }
+    if (textEquals(cmd, "zero") || textEquals(cmd, "setzero") || textEquals(cmd, "servozero")) {
+        requestServoInternalZero(sharedData);
+        Serial.println("<<<CMD:ZERO>>>");
+        return true;
+    }
+    if (textEquals(cmd, "status")) {
+        Serial.printf("<<<STATUS mode=%u enabled=%u owner=%u state=%u fault=0x%08lX joint_token=%lu motor_token=%lu>>>\r\n",
+                      (unsigned)sharedData->control_mode,
+                      (unsigned)sharedData->control_enabled,
+                      (unsigned)sharedData->servo_target_owner,
+                      (unsigned)sharedData->system_state,
+                      (unsigned long)sharedData->overload_fault_bitmap,
+                      (unsigned long)sharedData->joint_command_token,
+                      (unsigned long)sharedData->motor_command_token);
+        return true;
+    }
+    Serial.printf("<<<CMD:UNKNOWN %s>>>\r\n", cmd);
+    return true;
+}
+
 // Apply a parsed downstream command frame.
 static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* frame, size_t frameLen)
 {
@@ -528,29 +635,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_SERVO_INTERNAL_ZERO)
     {
-        sharedData->control_enabled = 0;
-        sharedData->servo_target_owner = SERVO_TARGET_OWNER_NONE;
-        sharedData->system_state = SYSTEM_STATE_STOPPED;
-        SemaphoreHandle_t lock = sharedData->commandStateMutex ? sharedData->commandStateMutex : sharedData->targetAnglesMutex;
-        if (!lock || xSemaphoreTake(lock, pdMS_TO_TICKS(10)) == pdTRUE) {
-            memset(sharedData->targetAngles, 0, sizeof(sharedData->targetAngles));
-            memset(sharedData->motorTargetRaw, 0, sizeof(sharedData->motorTargetRaw));
-            memset(sharedData->motorSweepTargetRaw, 0, sizeof(sharedData->motorSweepTargetRaw));
-            sharedData->joint_command_token = 0;
-            sharedData->motor_command_token = 0;
-            sharedData->motor_sweep_command_token = 0;
-            sharedData->motor_direct_command_generation++;
-            sharedData->motor_direct_command_source = MOTOR_DIRECT_SOURCE_NONE;
-            sharedData->control_mode = CONTROL_MODE_JOINT;
-            if (lock) {
-                xSemaphoreGive(lock);
-            }
-        }
-        if (sharedData->servoTargetQueue) {
-            xQueueReset(sharedData->servoTargetQueue);
-        }
-        sharedData->servo_internal_zero_token++;
-        sendProtoAckPacket(CMD_SERVO_INTERNAL_ZERO, 0, PROTO_ACK_STATUS_OK);
+        requestServoInternalZero(sharedData);
         return;
     }
 
@@ -619,6 +704,31 @@ void upperCommunicationTask(void* parameter)
             {
                 handleLegacySingleByteCommand(sharedData, cur);
                 parseOffset += 1;
+                continue;
+            }
+
+            if ((cur >= (uint8_t)'A' && cur <= (uint8_t)'Z') ||
+                (cur >= (uint8_t)'a' && cur <= (uint8_t)'z') ||
+                cur == (uint8_t)' ' || cur == (uint8_t)'\t')
+            {
+                size_t lineEnd = parseOffset;
+                while (lineEnd < rxLen &&
+                       rxBuffer[lineEnd] != (uint8_t)'\n' &&
+                       rxBuffer[lineEnd] != (uint8_t)'\r') {
+                    lineEnd++;
+                }
+
+                if (lineEnd >= rxLen) {
+                    break;
+                }
+
+                handleTextCommandLine(sharedData, rxBuffer + parseOffset, lineEnd - parseOffset);
+                parseOffset = lineEnd;
+                while (parseOffset < rxLen &&
+                       (rxBuffer[parseOffset] == (uint8_t)'\n' ||
+                        rxBuffer[parseOffset] == (uint8_t)'\r')) {
+                    parseOffset++;
+                }
                 continue;
             }
 
