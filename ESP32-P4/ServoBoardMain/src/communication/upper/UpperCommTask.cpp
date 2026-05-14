@@ -16,6 +16,7 @@ extern volatile uint8_t g_calibrationUIStatus;
 // 2) publish sensor, servo, telemetry, debug, and fault packets;
 // 3) keep protocol ACK and fault heartbeat reporting synchronized.
 static uint8_t g_sensorStreamMode = SENSOR_STREAM_MODE_SIGNED_I16;
+static bool g_textMonitorMode = false;
 
 // Joint-mode motion gate diagnostics bits (device -> host).
 static const uint32_t kJointGateNoTarget = (1UL << 0);
@@ -537,6 +538,16 @@ static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* l
                       (unsigned long)sharedData->motor_command_token);
         return true;
     }
+    if (textEquals(cmd, "text") || textEquals(cmd, "monitor") || textEquals(cmd, "quiet")) {
+        g_textMonitorMode = true;
+        Serial.println("<<<MONITOR:TEXT telemetry=off>>>");
+        return true;
+    }
+    if (textEquals(cmd, "binary") || textEquals(cmd, "telemetry") || textEquals(cmd, "ui")) {
+        g_textMonitorMode = false;
+        Serial.println("<<<MONITOR:BINARY telemetry=on>>>");
+        return true;
+    }
     Serial.printf("<<<CMD:UNKNOWN %s>>>\r\n", cmd);
     return true;
 }
@@ -785,7 +796,8 @@ void upperCommunicationTask(void* parameter)
         }
 
         bool sentPacket = false;
-        if (sharedData->mappedAngleQueue &&
+        if (!g_textMonitorMode &&
+            sharedData->mappedAngleQueue &&
             xQueuePeek(sharedData->mappedAngleQueue, &sensorMappedData, 0) == pdTRUE &&
             sensorMappedData.timestamp != lastSensorMappedTimestampSent)
         {
@@ -801,7 +813,8 @@ void upperCommunicationTask(void* parameter)
         }
 
         RemoteTactileData_t tactileData;
-        if (sharedData->tactileQueue &&
+        if (!g_textMonitorMode &&
+            sharedData->tactileQueue &&
             xQueueReceive(sharedData->tactileQueue, &tactileData, 0) == pdTRUE)
         {
             sendDataPacket(NULL, NULL, NULL, NULL, NULL, NULL, &tactileData, NULL);
@@ -810,7 +823,8 @@ void upperCommunicationTask(void* parameter)
 
         JointDebugData_t jointDebugData;
         uint8_t jointDebugSent = 0;
-        while (jointDebugSent < 2 &&
+        while (!g_textMonitorMode &&
+               jointDebugSent < 2 &&
                xQueueReceive(sharedData->jointDebugQueue, &jointDebugData, 0) == pdTRUE)
         {
             sendDataPacket(NULL, NULL, NULL, NULL, NULL, NULL, NULL, &jointDebugData);
@@ -819,14 +833,16 @@ void upperCommunicationTask(void* parameter)
         }
 
         ServoAngleData_t servoRawData;
-        if (xQueueReceive(sharedData->servoRawQueue, &servoRawData, 0) == pdTRUE)
+        if (!g_textMonitorMode &&
+            xQueueReceive(sharedData->servoRawQueue, &servoRawData, 0) == pdTRUE)
         {
             sendDataPacket(NULL, NULL, NULL, NULL, &servoRawData, NULL, NULL, NULL);
             sentPacket = true;
         }
 
         ServoTelemetryData_t telemetryData;
-        if (xQueueReceive(sharedData->servoTelemetryQueue, &telemetryData, 0) == pdTRUE)
+        if (!g_textMonitorMode &&
+            xQueueReceive(sharedData->servoTelemetryQueue, &telemetryData, 0) == pdTRUE)
         {
             sendDataPacket(NULL, NULL, NULL, NULL, NULL, &telemetryData, NULL, NULL);
             sentPacket = true;
@@ -834,14 +850,15 @@ void upperCommunicationTask(void* parameter)
 
         bool sentServoAngle = false;
         ServoAngleData_t servoAngleData;
-        if (xQueueReceive(sharedData->servoAngleQueue, &servoAngleData, 0) == pdTRUE)
+        if (!g_textMonitorMode &&
+            xQueueReceive(sharedData->servoAngleQueue, &servoAngleData, 0) == pdTRUE)
         {
             sendDataPacket(NULL, NULL, NULL, &servoAngleData, NULL, NULL, NULL, NULL);
             sentServoAngle = true;
             sentPacket = true;
         }
 
-        if (!sentPacket && !sentServoAngle && g_calibrationUIStatus != 0)
+        if (!g_textMonitorMode && !sentPacket && !sentServoAngle && g_calibrationUIStatus != 0)
         {
             sendDataPacket(NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         }
@@ -852,7 +869,7 @@ void upperCommunicationTask(void* parameter)
             (!faultStatusSentInitialized) || (faultBitmap != lastFaultStatusSent);
         const bool heartbeatDue =
             (!faultStatusSentInitialized) || ((nowMs - lastFaultStatusSentMs) >= kFaultStatusHeartbeatMs);
-        if (bitmapChanged || heartbeatDue) {
+        if (!g_textMonitorMode && (bitmapChanged || heartbeatDue)) {
             sendFaultStatusPacket(faultBitmap);
             lastFaultStatusSent = faultBitmap;
             lastFaultStatusSentMs = nowMs;
@@ -864,7 +881,7 @@ void upperCommunicationTask(void* parameter)
             (!releaseFaultSentInitialized) || (releaseFaultBitmap != lastReleaseFaultSent);
         const bool releaseHeartbeatDue =
             (!releaseFaultSentInitialized) || ((nowMs - lastReleaseFaultSentMs) >= kFaultStatusHeartbeatMs);
-        if (releaseBitmapChanged || releaseHeartbeatDue) {
+        if (!g_textMonitorMode && (releaseBitmapChanged || releaseHeartbeatDue)) {
             sendReleaseFaultPacket(releaseFaultBitmap);
             lastReleaseFaultSent = releaseFaultBitmap;
             lastReleaseFaultSentMs = nowMs;
@@ -879,7 +896,7 @@ void upperCommunicationTask(void* parameter)
             (sharedData->system_fault_bitmap & 0x7FFF);
         const bool controlChanged = (controlSig != lastControlStatusSig);
         const bool controlHeartbeatDue = ((nowMs - lastControlStatusSentMs) >= kFaultStatusHeartbeatMs);
-        if (controlChanged || controlHeartbeatDue) {
+        if (!g_textMonitorMode && (controlChanged || controlHeartbeatDue)) {
             sendControlStatusPacket(sharedData);
             lastControlStatusSig = controlSig;
             lastControlStatusSentMs = nowMs;
