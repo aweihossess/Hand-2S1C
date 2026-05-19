@@ -1,24 +1,18 @@
-# Hand-2S1C Tendon-Length PD Firmware
+# Hand-2S1C Tendon Feedforward + Angle PID Firmware
 
-This branch records the current ESP32-P4 ServoBoard debug firmware for the
-two-servo MCP tendon mechanism. The key idea of this version is:
+This branch is the next control experiment after the tendon-length PD version.
+The core idea is:
 
 ```text
-joint angle command -> MCP tendon length model -> tendon-length PD -> motor_abs target
+tendon model = feedforward
+joint angle error = feedback PID
+motorTarget = tendon feedforward + 2x2 angle PID feedback
 ```
 
-In other words, degree mode is not a pure joint-angle PID yet. The geometric tendon
-model is part of both feedforward and feedback.
+This is intended to avoid the previous behavior where the motor reached a model
+tendon-length target while the joint angle still had steady-state error.
 
-## What This Version Contains
-
-- Clean text commands for Arduino Serial Monitor.
-- Direct motor mode for checking whether each servo can execute `motor_abs` targets.
-- Degree mode for J00/J01 using the current MCP tendon length model.
-- Servo software zeroing using `motor_abs = hardware_abs - sw_zero_ofs`.
-- MCP debug logs that show joint target/feedback, tendon length target/feedback, solver output, and final servo target.
-
-Current MCP mapping:
+## Current MCP Mapping
 
 ```text
 J00 = MCP-AA
@@ -27,16 +21,41 @@ M00 = model R tendon
 M01 = model L tendon
 ```
 
-Current tuning:
+Current base parameters:
 
 ```text
 lengthToPulse M00/M01 = -160 counts/mm
-tendon length Kp      = 10
-tendon length Kd      = 0.05
-feedback clamp        = +/-2 mm
 MCP command max step  = 320 counts per control update
 MCP motor abs guard   = +/-6400 counts
 tracking error guard  = 30 deg
+```
+
+Current 2x2 angle feedback matrix:
+
+```text
+          J00 error   J01 error
+M00/R P   -20          +10
+M01/L P   +20          +10
+
+M00/R I   -1           +0.5
+M01/L I   +1           +0.5
+
+M00/R D    0            0
+M01/L D    0            0
+```
+
+Integrator limit:
+
+```text
+J00 integral = +/-30 deg*s
+J01 integral = +/-30 deg*s
+```
+
+Angle feedback output limit:
+
+```text
+M00 feedback = +/-1200 counts
+M01 feedback = +/-1200 counts
 ```
 
 ## Build And Upload
@@ -127,8 +146,6 @@ encoder joint angles.
 
 Use direct mode first to verify each servo command path.
 
-Recommended test:
-
 ```text
 text
 stop
@@ -189,66 +206,28 @@ J00 / MCP-AA: -20 deg to +30 deg
 J01 / MCP-FE: 0 deg to 90 deg
 ```
 
-If the target is outside the range, the firmware clamps it and reports the applied value.
-
 ## Degree Control Principle
 
-The degree-mode control path for J00/J01 is:
+The degree-mode control path for J00/J01 is now:
 
 ```text
 1. Receive J00/J01 target angles.
 2. Filter target and magnetic encoder feedback.
 3. Convert target angles to model target tendon lengths.
-4. Convert feedback angles to model actual tendon lengths.
-5. Compute tendon length error.
-6. Apply tendon-length PD correction.
-7. Add model feedforward and convert mm to motor_abs counts.
+4. Use the tendon model only as feedforward:
+      feedforward = (targetLen - zeroLen) * lengthToPulse
+5. Compute joint angle errors directly:
+      e00 = J00_target - J00_actual
+      e01 = J01_target - J01_actual
+6. Apply the 2x2 angle PID matrix to produce motor feedback counts.
+7. Add feedforward and angle feedback:
+      motor_abs_target = feedforward + angle_feedback
 8. Limit per-cycle command step and motor_abs range.
 9. Send M00/M01 motor targets to the servo layer.
 ```
 
-The core formula is:
-
-```text
-length_error = target_tendon_length - actual_tendon_length
-feedback_mm = Kp * length_error + Kd * d(length_error)/dt
-feedback_mm = clamp(feedback_mm, -2 mm, +2 mm)
-
-feedforward_mm = target_tendon_length - zero_tendon_length
-motor_abs_target = (feedforward_mm + feedback_mm) * lengthToPulse
-```
-
-For this branch:
-
-```text
-lengthToPulse = -160 counts/mm
-```
-
-Because `lengthToPulse` is negative, a smaller model tendon length can produce a positive
-motor target, depending on the assigned tendon and motor placement.
-
-## Important Limitation Of This Version
-
-This branch uses tendon-length PD, not joint-angle PID. That means the firmware tries to
-make the model tendon length match the model target tendon length. If the real mechanism
-does not match the model perfectly, the motor may reach its computed `motor_abs` target
-while the joint angle still has steady-state error.
-
-Example symptom:
-
-```text
-J00 target=10 deg
-J00 actual settles near 5 deg
-M00/M01 motorTarget stops changing
-```
-
-That means the tendon-length solver reached its current motor target. It does not mean a
-joint-angle integrator is still pushing toward the angle target. A future branch should
-test:
-
-```text
-motorTarget = tendon_model_feedforward + 2x2 joint-angle PID feedback
-```
+This means the angle feedback can keep pushing while the joint angle has not reached
+the target, even if the model feedforward target was already reached.
 
 ## Reading The MCP Log
 
@@ -264,10 +243,10 @@ Fields:
 J00/J01 target     requested joint angle, deg
 J00/J01 actual     magnetic encoder feedback, deg
 M00/R targetLen    model R tendon length for M00 target, mm
-M00/R actualLen    model R tendon length from encoder feedback, mm
+M00/R actualLen    model R tendon length from encoder feedback, shown for diagnosis
 M01/L targetLen    model L tendon length for M01 target, mm
-M01/L actualLen    model L tendon length from encoder feedback, mm
-mappedMotor        feedforward + tendon-length PD output, motor_abs counts
+M01/L actualLen    model L tendon length from encoder feedback, shown for diagnosis
+mappedMotor        tendon feedforward + angle PID feedback, motor_abs counts
 solver             rounded solver output
 cmd                final command after step limiting and motor guard
 motorTarget        command sent to servo layer, motor_abs counts
@@ -277,14 +256,8 @@ motorAbsNow        current hardware_abs - swZero
 hardwareAbsNow     current hardware absolute multi-turn position
 ```
 
-If you see:
-
-```text
-mappedMotor=873.8 solver=873 cmd=873 motorAbsNow=873
-```
-
-then the motor has reached the target computed by the tendon-length solver. It is not
-being blocked by the motor guard unless a `[JOINT SAFETY]` message is printed.
+In this branch, `actualLen` is diagnostic only. It no longer directly drives the PD
+feedback term.
 
 ## Safety Messages
 
@@ -314,7 +287,8 @@ MCP motor abs out of range   M00/M01 motor_abs exceeded +/-6400 counts.
 6. Enter `degree` mode.
 7. Test `j0 5`, then `j0 10`.
 8. Test `j1 10`, then `j1 20`.
-9. Watch whether `actual` angles move toward targets and whether `mappedMotor` stops at a fixed value.
+9. If the joint overshoots or oscillates, reduce the 2x2 angle gains.
+10. If the joint stalls before reaching target, increase the relevant angle P or I gain carefully.
 
 If direction is wrong, check motor placement, tendon routing, and encoder direction before
 increasing gains.

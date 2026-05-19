@@ -65,6 +65,8 @@ private:
     float _tendonZeroLength[JOINT_COUNT];
     float _tendonLengthToPulse[JOINT_COUNT];
     float _tendonPrevMotorError[JOINT_COUNT];
+    float _jointErrorIntegral[JOINT_COUNT];
+    float _jointPrevError[JOINT_COUNT];
     float _tendonMotorKp[JOINT_COUNT];
     float _tendonMotorKd[JOINT_COUNT];
     float _tendonMotorOutputLimit[JOINT_COUNT];

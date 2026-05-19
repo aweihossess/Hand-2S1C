@@ -59,6 +59,8 @@ ControlSolver::ControlSolver() : _initialized(false)
     memset(_tendonZeroLength, 0, sizeof(_tendonZeroLength));
     memset(_tendonLengthToPulse, 0, sizeof(_tendonLengthToPulse));
     memset(_tendonPrevMotorError, 0, sizeof(_tendonPrevMotorError));
+    memset(_jointErrorIntegral, 0, sizeof(_jointErrorIntegral));
+    memset(_jointPrevError, 0, sizeof(_jointPrevError));
     memset(_tendonMotorKp, 0, sizeof(_tendonMotorKp));
     memset(_tendonMotorKd, 0, sizeof(_tendonMotorKd));
     memset(_tendonMotorOutputLimit, 0, sizeof(_tendonMotorOutputLimit));
@@ -92,8 +94,8 @@ void ControlSolver::begin()
         _qFbMinDeg[i] = kDefaultQFbMinDeg;
         _qFbMaxDeg[i] = kDefaultQFbMaxDeg;
         _tendonLengthToPulse[i] = kTendonLengthToPulse[i];
-        _tendonKp[i] = kTendonLengthKp[i];
-        _tendonKd[i] = kTendonLengthKd[i];
+        _tendonKp[i] = 0.0f;
+        _tendonKd[i] = 0.0f;
         _tendonMotorKp[i] = kTendonMotorKp[i];
         _tendonMotorKd[i] = kTendonMotorKd[i];
         _tendonMotorOutputLimit[i] = kTendonMotorOutputLimit[i];
@@ -168,10 +170,25 @@ bool ControlSolver::computeTendonFeedforward(float* targetDegs,
         _actualTendonLength[kMcpRTendonIndex] =
             computeMcpLTendonLength(qFb[kMcpTheta1Joint], qFb[kMcpTheta2Joint]);
 
+        const float error0 = qRef[kMcpTheta1Joint] - qFb[kMcpTheta1Joint];
+        const float error1 = qRef[kMcpTheta2Joint] - qFb[kMcpTheta2Joint];
+        _jointErrorIntegral[kMcpTheta1Joint] += error0 * kControlPeriodSec;
+        _jointErrorIntegral[kMcpTheta2Joint] += error1 * kControlPeriodSec;
+        _jointErrorIntegral[kMcpTheta1Joint] = clampFloat(
+            _jointErrorIntegral[kMcpTheta1Joint],
+            -kMcpAngleIntegralLimitDegSec[kMcpTheta1Joint],
+            kMcpAngleIntegralLimitDegSec[kMcpTheta1Joint]);
+        _jointErrorIntegral[kMcpTheta2Joint] = clampFloat(
+            _jointErrorIntegral[kMcpTheta2Joint],
+            -kMcpAngleIntegralLimitDegSec[kMcpTheta2Joint],
+            kMcpAngleIntegralLimitDegSec[kMcpTheta2Joint]);
+
         outServoPulses[kMcpLTendonIndex] =
             computeTendonCascadeOutput(kMcpLTendonIndex, absolutePosition[kMcpLTendonIndex]);
         outServoPulses[kMcpRTendonIndex] =
             computeTendonCascadeOutput(kMcpRTendonIndex, absolutePosition[kMcpRTendonIndex]);
+        _jointPrevError[kMcpTheta1Joint] = error0;
+        _jointPrevError[kMcpTheta2Joint] = error1;
     }
 
     return true;
@@ -289,7 +306,6 @@ int16_t ControlSolver::computeTendonCascadeOutput(uint8_t tendonIndex, int32_t a
 
     if (!_tendonControllerInitialized[tendonIndex]) {
         _tendonZeroLength[tendonIndex] = getTendonModelZeroLength(tendonIndex);
-        _tendonPrevLengthError[tendonIndex] = 0.0f;
         _tendonPrevMotorError[tendonIndex] = 0.0f;
         _tendonControllerInitialized[tendonIndex] = true;
     }
@@ -299,19 +315,27 @@ int16_t ControlSolver::computeTendonCascadeOutput(uint8_t tendonIndex, int32_t a
         return clampCommand((float)actualMotorAbs);
     }
 
-    const float lengthError = _targetTendonLength[tendonIndex] - _actualTendonLength[tendonIndex];
-    const float lengthErrorDelta =
-        (lengthError - _tendonPrevLengthError[tendonIndex]) / kControlPeriodSec;
-    float feedbackCorrectionMm =
-        _tendonKp[tendonIndex] * lengthError +
-        _tendonKd[tendonIndex] * lengthErrorDelta;
-    feedbackCorrectionMm = clampFloat(feedbackCorrectionMm, -2.0f, 2.0f);
-    _tendonPrevLengthError[tendonIndex] = lengthError;
-
     const float feedforwardMm =
         _targetTendonLength[tendonIndex] - _tendonZeroLength[tendonIndex];
-    float motorAbsTarget =
-        (feedforwardMm + feedbackCorrectionMm) * lengthToPulse;
+    const float feedforwardCounts = feedforwardMm * lengthToPulse;
+
+    const float error0 = _qRef[kMcpTheta1Joint] - _qFbFiltered[kMcpTheta1Joint];
+    const float error1 = _qRef[kMcpTheta2Joint] - _qFbFiltered[kMcpTheta2Joint];
+    const float errorDelta0 = (error0 - _jointPrevError[kMcpTheta1Joint]) / kControlPeriodSec;
+    const float errorDelta1 = (error1 - _jointPrevError[kMcpTheta2Joint]) / kControlPeriodSec;
+
+    float angleFeedbackCounts =
+        kMcpAngleKp[tendonIndex][kMcpTheta1Joint] * error0 +
+        kMcpAngleKp[tendonIndex][kMcpTheta2Joint] * error1 +
+        kMcpAngleKi[tendonIndex][kMcpTheta1Joint] * _jointErrorIntegral[kMcpTheta1Joint] +
+        kMcpAngleKi[tendonIndex][kMcpTheta2Joint] * _jointErrorIntegral[kMcpTheta2Joint] +
+        kMcpAngleKd[tendonIndex][kMcpTheta1Joint] * errorDelta0 +
+        kMcpAngleKd[tendonIndex][kMcpTheta2Joint] * errorDelta1;
+    angleFeedbackCounts = clampFloat(angleFeedbackCounts,
+                                     -kMcpAngleFeedbackLimitCounts[tendonIndex],
+                                     kMcpAngleFeedbackLimitCounts[tendonIndex]);
+
+    float motorAbsTarget = feedforwardCounts + angleFeedbackCounts;
     motorAbsTarget = clampFloat(motorAbsTarget, -kMcpMotorAbsLimitCounts, kMcpMotorAbsLimitCounts);
     _mappedMotorTarget[tendonIndex] = motorAbsTarget;
 
@@ -367,6 +391,8 @@ void ControlSolver::resetAll()
 {
     memset(_tendonPrevLengthError, 0, sizeof(_tendonPrevLengthError));
     memset(_tendonPrevMotorError, 0, sizeof(_tendonPrevMotorError));
+    memset(_jointErrorIntegral, 0, sizeof(_jointErrorIntegral));
+    memset(_jointPrevError, 0, sizeof(_jointPrevError));
     memset(_tendonControllerInitialized, 0, sizeof(_tendonControllerInitialized));
     memset(_qRefInitialized, 0, sizeof(_qRefInitialized));
     memset(_qFbInitialized, 0, sizeof(_qFbInitialized));

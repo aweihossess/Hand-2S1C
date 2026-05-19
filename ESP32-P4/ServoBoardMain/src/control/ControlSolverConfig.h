@@ -15,18 +15,34 @@ static const float kTendonLengthToPulse[JOINT_COUNT] = {
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
 };
 
-// Small length-feedback correction in mm per mm of tendon length error.
-// Feedforward remains the primary command path.
-static const float kTendonLengthKp[JOINT_COUNT] = {
-    10.0f, 10.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-    0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-    0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
+// Angle feedback correction for the MCP pair.
+// Rows are motors/tendons: 0=M00/model R, 1=M01/model L.
+// Columns are joints: 0=J00/MCP-AA, 1=J01/MCP-FE.
+// Units:
+//   P: motor counts / deg
+//   I: motor counts / (deg*s)
+//   D: motor counts / (deg/s)
+static const float kMcpAngleKp[2][2] = {
+    {-20.0f, 10.0f},
+    { 20.0f, 10.0f}
 };
 
-static const float kTendonLengthKd[JOINT_COUNT] = {
-    0.05f, 0.05f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-    0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-    0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
+static const float kMcpAngleKi[2][2] = {
+    {-1.0f, 0.5f},
+    { 1.0f, 0.5f}
+};
+
+static const float kMcpAngleKd[2][2] = {
+    {0.0f, 0.0f},
+    {0.0f, 0.0f}
+};
+
+static const float kMcpAngleIntegralLimitDegSec[2] = {
+    30.0f, 30.0f
+};
+
+static const float kMcpAngleFeedbackLimitCounts[2] = {
+    1200.0f, 1200.0f
 };
 
 // Motor position loop. Output is a per-cycle Motor Abs step.
