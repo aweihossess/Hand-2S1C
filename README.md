@@ -37,8 +37,8 @@ Current 2x2 angle feedback matrix:
 M00/R P   -20          +10
 M01/L P   +20          +10
 
-M00/R I   -1           +0.5
-M01/L I   +1           +0.5
+M00/R I   -1           +20
+M01/L I   +1           +20
 
 M00/R D    0            0
 M01/L D    0            0
@@ -48,7 +48,7 @@ Integrator limit:
 
 ```text
 J00 integral = +/-30 deg*s
-J01 integral = +/-30 deg*s
+J01 integral = +/-60 deg*s
 ```
 
 Angle feedback output limit:
@@ -57,6 +57,11 @@ Angle feedback output limit:
 M00 feedback = +/-1200 counts
 M01 feedback = +/-1200 counts
 ```
+
+This branch intentionally uses a stronger J01 integral term to reduce steady-state
+error when J01 does not reach its target. It is useful for tuning, but it should not be
+used for hard grasping without stall/load protection because integral action can keep
+increasing motor force when the finger is blocked by an object.
 
 ## Build And Upload
 
@@ -203,7 +208,7 @@ Current software limits:
 
 ```text
 J00 / MCP-AA: -20 deg to +30 deg
-J01 / MCP-FE: 0 deg to 90 deg
+J01 / MCP-FE: -20 deg to 80 deg
 ```
 
 ## Degree Control Principle
@@ -292,4 +297,3 @@ MCP motor abs out of range   M00/M01 motor_abs exceeded +/-6400 counts.
 
 If direction is wrong, check motor placement, tendon routing, and encoder direction before
 increasing gains.
-

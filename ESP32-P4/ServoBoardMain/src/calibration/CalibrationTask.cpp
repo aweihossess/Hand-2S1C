@@ -53,7 +53,7 @@ int32_t g_motorZeroAbsManual[SERVO_TOTAL_NUM] = {
 // 这是给现场调试预留的固定参数位：将每个关节在“机械零位”时的 raw 填到这里。
 // -1 表示该关节未配置，默认回退为 0。
 static const int32_t kManualZeroRaw[ENCODER_TOTAL_NUM] = {
-    4500, 1960, 6700, 13000,
+    4698, 1379, 6700, 13000,
     -1, -1, -1, -1,
     -1, -1, -1, -1,
     -1, -1, -1, -1,

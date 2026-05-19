@@ -23,13 +23,13 @@ static const float kTendonLengthToPulse[JOINT_COUNT] = {
 //   I: motor counts / (deg*s)
 //   D: motor counts / (deg/s)
 static const float kMcpAngleKp[2][2] = {
-    {-20.0f, 10.0f},
-    { 20.0f, 10.0f}
+    {-20.0f, 30.0f},
+    { 20.0f, 30.0f}
 };
 
 static const float kMcpAngleKi[2][2] = {
-    {-1.0f, 0.5f},
-    { 1.0f, 0.5f}
+    {-1.0f, 20.0f},
+    { 1.0f, 20.0f}
 };
 
 static const float kMcpAngleKd[2][2] = {
@@ -38,7 +38,7 @@ static const float kMcpAngleKd[2][2] = {
 };
 
 static const float kMcpAngleIntegralLimitDegSec[2] = {
-    30.0f, 30.0f
+    30.0f, 60.0f
 };
 
 static const float kMcpAngleFeedbackLimitCounts[2] = {
