@@ -4,12 +4,13 @@
 #include "../shared/TaskSharedData.h"
 
 // MCP tendon model config.
-// Index 0 maps to M00/MCP-L, index 1 maps to M01/MCP-R.
+// Physical motor placement is swapped:
+// index 0 maps to M00/model R tendon, index 1 maps to M01/model L tendon.
 // Motor Abs is the servo position relative to SW Zero Ofs, so 0 means the
 // mechanical zero captured by Set Servo Zero.
 
 static const float kTendonLengthToPulse[JOINT_COUNT] = {
-    80.0f, 80.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -160.0f, -160.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
 };
@@ -17,13 +18,13 @@ static const float kTendonLengthToPulse[JOINT_COUNT] = {
 // Small length-feedback correction in mm per mm of tendon length error.
 // Feedforward remains the primary command path.
 static const float kTendonLengthKp[JOINT_COUNT] = {
-    0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    10.0f, 10.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
 };
 
 static const float kTendonLengthKd[JOINT_COUNT] = {
-    0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    0.05f, 0.05f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
 };

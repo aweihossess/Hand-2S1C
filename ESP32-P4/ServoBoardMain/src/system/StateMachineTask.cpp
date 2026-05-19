@@ -64,7 +64,7 @@ static void resetCommandState(TaskSharedData_t* sharedData)
     sharedData->joint_command_token = 0;
     sharedData->motor_direct_command_generation = 0;
     sharedData->motor_direct_command_source = MOTOR_DIRECT_SOURCE_NONE;
-    sharedData->control_mode = CONTROL_MODE_JOINT;
+    sharedData->control_mode = CONTROL_MODE_NONE;
 
     if (lock) {
         xSemaphoreGive(lock);
@@ -87,6 +87,7 @@ static void setCommandModeJoint(TaskSharedData_t* sharedData)
         xSemaphoreGive(lock);
     }
 }
+
 
 static void resetServoTargetQueue(TaskSharedData_t* sharedData)
 {

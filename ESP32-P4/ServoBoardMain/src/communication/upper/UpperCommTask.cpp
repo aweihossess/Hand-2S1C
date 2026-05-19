@@ -7,6 +7,7 @@
 #include "UpperCommProtocol.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern volatile uint8_t g_calibrationUIStatus;
@@ -453,7 +454,7 @@ static void requestServoInternalZero(TaskSharedData_t* sharedData)
         sharedData->motor_sweep_command_token = 0;
         sharedData->motor_direct_command_generation++;
         sharedData->motor_direct_command_source = MOTOR_DIRECT_SOURCE_NONE;
-        sharedData->control_mode = CONTROL_MODE_JOINT;
+        sharedData->control_mode = CONTROL_MODE_NONE;
         if (lock) {
             xSemaphoreGive(lock);
         }
@@ -478,6 +479,393 @@ static bool textEquals(const char* value, const char* expected)
         expected++;
     }
     return *value == '\0' && *expected == '\0';
+}
+
+static const char* skipTextSpaces(const char* p)
+{
+    while (p && (*p == ' ' || *p == '\t' || *p == '=' || *p == ':')) {
+        p++;
+    }
+    return p;
+}
+
+static bool parseTextInt32(const char* p, int32_t* out, const char** endOut)
+{
+    if (!p || !out) {
+        return false;
+    }
+    p = skipTextSpaces(p);
+    if (!p || *p == '\0') {
+        return false;
+    }
+    char* endPtr = NULL;
+    const long value = strtol(p, &endPtr, 10);
+    if (endPtr == p) {
+        return false;
+    }
+    *out = (int32_t)value;
+    if (endOut) {
+        *endOut = endPtr;
+    }
+    return true;
+}
+
+static bool parseTextFloat(const char* p, float* out, const char** endOut)
+{
+    if (!p || !out) {
+        return false;
+    }
+    p = skipTextSpaces(p);
+    if (!p || *p == '\0') {
+        return false;
+    }
+    char* endPtr = NULL;
+    const float value = strtof(p, &endPtr);
+    if (endPtr == p) {
+        return false;
+    }
+    *out = value;
+    if (endOut) {
+        *endOut = endPtr;
+    }
+    return true;
+}
+
+static bool parseTextMotorTargetCommand(const char* cmd, uint8_t* channelOut, int32_t* targetOut)
+{
+    if (!cmd || !channelOut || !targetOut) {
+        return false;
+    }
+
+    const char* p = cmd;
+    if (p[0] == 'm' && p[1] >= '0' && p[1] <= '9') {
+        p++;
+    } else if (strncmp(p, "motor", 5) == 0) {
+        p += 5;
+    } else {
+        return false;
+    }
+
+    int32_t channel = 0;
+    if (!parseTextInt32(p, &channel, &p)) {
+        return false;
+    }
+    int32_t target = 0;
+    if (!parseTextInt32(p, &target, NULL)) {
+        return false;
+    }
+    if (channel < 0 || channel >= SERVO_TOTAL_NUM) {
+        Serial.printf("<<<MOTOR_TARGET bad_channel=%ld>>>\r\n", (long)channel);
+        return false;
+    }
+
+    *channelOut = (uint8_t)channel;
+    *targetOut = target;
+    return true;
+}
+
+static bool parseTextJointTargetCommand(const char* cmd, uint8_t* jointOut, float* targetOut)
+{
+    if (!cmd || !jointOut || !targetOut) {
+        return false;
+    }
+
+    const char* p = cmd;
+    if (p[0] == 'j' && p[1] >= '0' && p[1] <= '9') {
+        p++;
+    } else if (strncmp(p, "joint", 5) == 0) {
+        p += 5;
+    } else if (strncmp(p, "degree", 6) == 0) {
+        p += 6;
+    } else if (strncmp(p, "deg", 3) == 0) {
+        p += 3;
+    } else {
+        return false;
+    }
+
+    int32_t joint = 0;
+    if (!parseTextInt32(p, &joint, &p)) {
+        return false;
+    }
+    float target = 0.0f;
+    if (!parseTextFloat(p, &target, NULL)) {
+        return false;
+    }
+    if (joint < 0 || joint >= ENCODER_TOTAL_NUM) {
+        Serial.printf("<<<JOINT_TARGET bad_joint=%ld>>>\r\n", (long)joint);
+        return false;
+    }
+
+    *jointOut = (uint8_t)joint;
+    *targetOut = target;
+    return true;
+}
+
+static float clampTextJointTargetDeg(float targetDeg, uint8_t joint, bool* clamped)
+{
+    float minDeg = 0.0f;
+    float maxDeg = 0.0f;
+    bool hasLimit = true;
+    if (joint == 0) {
+        minDeg = -20.0f;
+        maxDeg = 30.0f;
+    } else if (joint == 1) {
+        minDeg = 0.0f;
+        maxDeg = 90.0f;
+    } else {
+        hasLimit = false;
+    }
+
+    if (clamped) {
+        *clamped = false;
+    }
+    if (!isfinite(targetDeg)) {
+        targetDeg = 0.0f;
+        if (clamped) {
+            *clamped = true;
+        }
+    }
+    if (!hasLimit) {
+        return targetDeg;
+    }
+    if (targetDeg < minDeg) {
+        if (clamped) {
+            *clamped = true;
+        }
+        return minDeg;
+    }
+    if (targetDeg > maxDeg) {
+        if (clamped) {
+            *clamped = true;
+        }
+        return maxDeg;
+    }
+    return targetDeg;
+}
+
+static void applyTextMotorTarget(TaskSharedData_t* sharedData, uint8_t channel, int32_t target)
+{
+    if (!sharedData) {
+        return;
+    }
+
+    if (sharedData->control_mode != CONTROL_MODE_DIRECT_MOTOR) {
+        Serial.printf("<<<MOTOR_TARGET rejected: mode=%u send DIRECT first>>>\r\n",
+                      (unsigned)sharedData->control_mode);
+        return;
+    }
+
+    int32_t targets[SERVO_TOTAL_NUM] = {0};
+    ServoAngleData_t servoData;
+    bool hasServoData = false;
+    if (sharedData->servoAngleQueue &&
+        xQueuePeek(sharedData->servoAngleQueue, &servoData, 0) == pdTRUE) {
+        hasServoData = true;
+    }
+
+    SemaphoreHandle_t lock = sharedData->commandStateMutex;
+    if (lock && xSemaphoreTake(lock, pdMS_TO_TICKS(10)) != pdTRUE) {
+        Serial.println("<<<MOTOR_TARGET lock_timeout>>>");
+        return;
+    }
+
+    for (uint8_t i = 0; i < SERVO_TOTAL_NUM; i++) {
+        if (hasServoData && servoData.onlineStatus[i] != 0) {
+            targets[i] = servoData.servoAngles[i];
+        } else {
+            targets[i] = sharedData->motorTargetRaw[i];
+        }
+    }
+    if (lock) {
+        xSemaphoreGive(lock);
+    }
+
+    targets[channel] = clampServoAbsCommand(target);
+    upperApplyMotorTargets(sharedData, targets, SERVO_TOTAL_NUM, MOTOR_DIRECT_SOURCE_ABSOLUTE);
+
+    int32_t motorAbsNow = 0;
+    int32_t swZeroOfs = 0;
+    uint8_t online = 0;
+    if (hasServoData) {
+        motorAbsNow = servoData.servoAngles[channel];
+        swZeroOfs = servoData.softwareZeroOffsets[channel];
+        online = servoData.onlineStatus[channel];
+    }
+    int32_t hardwareTarget = targets[channel] + swZeroOfs;
+    if (hardwareTarget < -30719) hardwareTarget = -30719;
+    if (hardwareTarget > 30719) hardwareTarget = 30719;
+    const int32_t hardwareAbsNow = motorAbsNow + swZeroOfs;
+    const uint8_t willApply =
+        (sharedData->control_enabled != 0 &&
+         sharedData->servo_target_owner == SERVO_TARGET_OWNER_CONTROL &&
+         sharedData->system_state == SYSTEM_STATE_RUNNING &&
+         sharedData->control_mode == CONTROL_MODE_DIRECT_MOTOR) ? 1 : 0;
+
+    Serial.printf("<<<MOTOR_TARGET M%02u target=%ld sent=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld online=%u apply_now=%u enabled=%u owner=%u state=%u mode=%u>>>\r\n",
+                  (unsigned)channel,
+                  (long)target,
+                  (int)targets[channel],
+                  (long)swZeroOfs,
+                  (long)hardwareTarget,
+                  (long)motorAbsNow,
+                  (long)hardwareAbsNow,
+                  (unsigned)online,
+                  (unsigned)willApply,
+                  (unsigned)sharedData->control_enabled,
+                  (unsigned)sharedData->servo_target_owner,
+                  (unsigned)sharedData->system_state,
+                  (unsigned)sharedData->control_mode);
+    if (!willApply) {
+        Serial.println("<<<MOTOR_TARGET pending: send START then DIRECT to apply>>>");
+    }
+}
+
+static void applyTextJointTarget(TaskSharedData_t* sharedData, uint8_t joint, float targetDeg)
+{
+    if (!sharedData) {
+        return;
+    }
+
+    if (sharedData->control_mode != CONTROL_MODE_JOINT) {
+        Serial.printf("<<<JOINT_TARGET rejected: mode=%u send DEGREE first>>>\r\n",
+                      (unsigned)sharedData->control_mode);
+        return;
+    }
+
+    float targets[ENCODER_TOTAL_NUM] = {0.0f};
+
+    SemaphoreHandle_t lock = sharedData->commandStateMutex ? sharedData->commandStateMutex : sharedData->targetAnglesMutex;
+    if (lock && xSemaphoreTake(lock, pdMS_TO_TICKS(10)) != pdTRUE) {
+        Serial.println("<<<JOINT_TARGET lock_timeout>>>");
+        return;
+    }
+
+    for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++) {
+        targets[i] = sharedData->targetAngles[i];
+    }
+    if (lock) {
+        xSemaphoreGive(lock);
+    }
+
+    bool targetClamped = false;
+    const float appliedTargetDeg = clampTextJointTargetDeg(targetDeg, joint, &targetClamped);
+    targets[joint] = appliedTargetDeg;
+    upperApplyTargetAngles(sharedData, targets, ENCODER_TOTAL_NUM);
+    Serial.printf("<<<JOINT_TARGET J%02u target_deg=%.2f applied_deg=%.2f clamped=%u mode=degree>>>\r\n",
+                  (unsigned)joint,
+                  (double)targetDeg,
+                  (double)appliedTargetDeg,
+                  (unsigned)(targetClamped ? 1 : 0));
+}
+
+static void printServoTextSnapshot(TaskSharedData_t* sharedData)
+{
+    if (!sharedData || !sharedData->servoAngleQueue) {
+        Serial.println("<<<SERVO no_queue>>>");
+        return;
+    }
+
+    ServoAngleData_t servoData;
+    if (xQueuePeek(sharedData->servoAngleQueue, &servoData, 0) != pdTRUE) {
+        Serial.println("<<<SERVO no_data>>>");
+        return;
+    }
+
+    Serial.printf("<<<SERVO timestamp=%lu>>>\r\n", (unsigned long)servoData.timestamp);
+    for (uint8_t i = 0; i < SERVO_TOTAL_NUM; i++) {
+        if (servoData.onlineStatus[i] == 0) {
+            continue;
+        }
+        const int32_t motorAbs = servoData.servoAngles[i];
+        const int32_t swZeroOfs = servoData.softwareZeroOffsets[i];
+        const int32_t hardwareAbs = motorAbs + swZeroOfs;
+        Serial.printf("<<<SERVO M%02u motor_abs=%ld hardware_abs=%ld sw_zero_ofs=%ld online=%u>>>\r\n",
+                      (unsigned)i,
+                      (long)motorAbs,
+                      (long)hardwareAbs,
+                      (long)swZeroOfs,
+                      (unsigned)servoData.onlineStatus[i]);
+    }
+}
+
+static void printEncoderTextSnapshot(TaskSharedData_t* sharedData)
+{
+    if (!sharedData) {
+        Serial.println("<<<ENCODER no_shared_data>>>");
+        return;
+    }
+
+    MappedAngleData_t mappedData;
+    RemoteSensorData_t rawData;
+    const bool hasMapped =
+        sharedData->mappedAngleQueue &&
+        xQueuePeek(sharedData->mappedAngleQueue, &mappedData, 0) == pdTRUE;
+    const bool hasRaw =
+        sharedData->canRxQueue &&
+        xQueuePeek(sharedData->canRxQueue, &rawData, 0) == pdTRUE;
+
+    if (!hasMapped && !hasRaw) {
+        Serial.println("<<<ENCODER no_data>>>");
+        return;
+    }
+
+    const uint32_t mappedTimestamp = hasMapped ? mappedData.timestamp : 0;
+    const uint32_t rawTimestamp = hasRaw ? rawData.timestamp : 0;
+    Serial.printf("<<<ENCODER mapped_ts=%lu raw_ts=%lu>>>\r\n",
+                  (unsigned long)mappedTimestamp,
+                  (unsigned long)rawTimestamp);
+
+    for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++) {
+        const uint16_t raw = hasRaw ? rawData.encoderValues[i] : 0;
+        const uint8_t rawValid =
+            (hasRaw && rawData.isValid && rawData.errorFlags[i] == 0) ? 1 : 0;
+        const int16_t mapped = hasMapped ? mappedData.angleValues[i] : 0;
+        const uint8_t mappedValid =
+            (hasMapped && mappedData.isValid && mappedData.validFlags[i] != 0) ? 1 : 0;
+        const float deg = ((float)mapped * 360.0f) / 16384.0f;
+        Serial.printf("<<<ENC J%02u raw=%u raw_valid=%u mapped=%d mapped_valid=%u deg=%.2f>>>\r\n",
+                      (unsigned)i,
+                      (unsigned)raw,
+                      (unsigned)rawValid,
+                      (int)mapped,
+                      (unsigned)mappedValid,
+                      deg);
+    }
+}
+
+static void selectTextControlMode(TaskSharedData_t* sharedData, uint8_t mode)
+{
+    if (!sharedData) {
+        return;
+    }
+
+    SemaphoreHandle_t lock = sharedData->commandStateMutex ? sharedData->commandStateMutex : sharedData->targetAnglesMutex;
+    if (lock && xSemaphoreTake(lock, pdMS_TO_TICKS(10)) != pdTRUE) {
+        Serial.println("<<<MODE lock_timeout>>>");
+        return;
+    }
+
+    sharedData->control_mode = mode;
+    if (mode == CONTROL_MODE_JOINT) {
+        sharedData->motor_direct_command_source = MOTOR_DIRECT_SOURCE_NONE;
+        sharedData->motor_command_token = 0;
+        sharedData->motor_sweep_command_token = 0;
+        Serial.println("<<<MODE:DEGREE waiting_for_angle_target>>>");
+    } else if (mode == CONTROL_MODE_DIRECT_MOTOR) {
+        sharedData->joint_command_token = 0;
+        sharedData->motor_direct_command_source = MOTOR_DIRECT_SOURCE_NONE;
+        Serial.println("<<<MODE:DIRECT waiting_for_motor_target>>>");
+    } else {
+        sharedData->joint_command_token = 0;
+        sharedData->motor_command_token = 0;
+        sharedData->motor_sweep_command_token = 0;
+        sharedData->motor_direct_command_source = MOTOR_DIRECT_SOURCE_NONE;
+        Serial.println("<<<MODE:NONE>>>");
+    }
+
+    if (lock) {
+        xSemaphoreGive(lock);
+    }
 }
 
 static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* line, size_t len)
@@ -525,6 +913,38 @@ static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* l
     if (textEquals(cmd, "zero") || textEquals(cmd, "setzero") || textEquals(cmd, "servozero")) {
         requestServoInternalZero(sharedData);
         Serial.println("<<<CMD:ZERO>>>");
+        return true;
+    }
+    if (textEquals(cmd, "servo") || textEquals(cmd, "motor")) {
+        printServoTextSnapshot(sharedData);
+        return true;
+    }
+    if (textEquals(cmd, "encoder") || textEquals(cmd, "enc")) {
+        printEncoderTextSnapshot(sharedData);
+        return true;
+    }
+    if (textEquals(cmd, "degree") || textEquals(cmd, "deg") || textEquals(cmd, "joint")) {
+        selectTextControlMode(sharedData, CONTROL_MODE_JOINT);
+        return true;
+    }
+    if (textEquals(cmd, "direct") || textEquals(cmd, "derict") || textEquals(cmd, "motor_mode")) {
+        selectTextControlMode(sharedData, CONTROL_MODE_DIRECT_MOTOR);
+        return true;
+    }
+    if (textEquals(cmd, "none") || textEquals(cmd, "idle")) {
+        selectTextControlMode(sharedData, CONTROL_MODE_NONE);
+        return true;
+    }
+    uint8_t motorChannel = 0;
+    int32_t motorTarget = 0;
+    if (parseTextMotorTargetCommand(cmd, &motorChannel, &motorTarget)) {
+        applyTextMotorTarget(sharedData, motorChannel, motorTarget);
+        return true;
+    }
+    uint8_t jointIndex = 0;
+    float jointTarget = 0.0f;
+    if (parseTextJointTargetCommand(cmd, &jointIndex, &jointTarget)) {
+        applyTextJointTarget(sharedData, jointIndex, jointTarget);
         return true;
     }
     if (textEquals(cmd, "status")) {

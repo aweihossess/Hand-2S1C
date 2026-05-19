@@ -27,14 +27,28 @@ static const float kMagCountLpfAlpha = 0.25f;
 static const int32_t kJointZeroHomingToleranceCounts = 40;
 static const uint8_t kJointZeroHomingStableCycles = 20;
 static const int32_t kJointCommandMaxStepCounts = 200;
-static const int32_t kMcpCommandMaxStepCounts = 80;
-static const float kJointMaxTrackErrorDeg = 15.0f;
-static const uint16_t kJointTargetSpeed = 600;
+static const int32_t kMcpCommandMaxStepCounts = 320;
+static const float kJointMaxTrackErrorDeg = 30.0f;
+static const uint16_t kJointTargetSpeed = 1200;
 static const uint8_t kJointTargetAcc = 40;
-static const int32_t kMcpJointModeMotorAbsGuardCounts = 1200;
-static const uint32_t kJointControlDiagIntervalMs = 200;
+static const int32_t kMcpJointModeMotorAbsGuardCounts = 6400;
+static const uint32_t kJointControlDiagIntervalMs = 1000;
 static const uint32_t kJointDebugIntervalMs = 50;
 static const bool kEnableReleaseGuard = false;
+static const uint8_t kMcpAaJointIndex = 0;
+static const uint8_t kMcpFeJointIndex = 1;
+static const float kMcpFeMinDeg = 0.0f;
+static const float kMcpFeMaxDeg = 90.0f;
+static const float kMcpAaMinDeg = -20.0f;
+static const float kMcpAaMaxDeg = 30.0f;
+static const float kMcpEncoderSafetyMarginDeg = 0.5f;
+
+static float clampFloatRange(float value, float minValue, float maxValue)
+{
+    if (value < minValue) return minValue;
+    if (value > maxValue) return maxValue;
+    return value;
+}
 
 static int16_t clampMappedCountForProtocol(int32_t value)
 {
@@ -102,6 +116,12 @@ static float clampJointTargetDegByCalib(float targetDeg, uint8_t jointIndex)
 {
     if (!isfinite(targetDeg)) targetDeg = 0.0f;
     if (jointIndex >= ENCODER_TOTAL_NUM) return 0.0f;
+    if (jointIndex == kMcpFeJointIndex) {
+        return clampFloatRange(targetDeg, kMcpFeMinDeg, kMcpFeMaxDeg);
+    }
+    if (jointIndex == kMcpAaJointIndex) {
+        return clampFloatRange(targetDeg, kMcpAaMinDeg, kMcpAaMaxDeg);
+    }
 
     float maxDeg = 0.0f;
     if (g_jointCalibResult[jointIndex].success) {
@@ -116,6 +136,22 @@ static float clampJointTargetDegByCalib(float targetDeg, uint8_t jointIndex)
     if (targetDeg < 0.0f) return 0.0f;
     if (targetDeg > maxDeg) return maxDeg;
     return targetDeg;
+}
+
+static bool isMcpJointEncoderOutOfRange(uint8_t jointIndex, float actualDeg)
+{
+    if (!isfinite(actualDeg)) {
+        return true;
+    }
+    if (jointIndex == kMcpFeJointIndex) {
+        return actualDeg < (kMcpFeMinDeg - kMcpEncoderSafetyMarginDeg) ||
+               actualDeg > (kMcpFeMaxDeg + kMcpEncoderSafetyMarginDeg);
+    }
+    if (jointIndex == kMcpAaJointIndex) {
+        return actualDeg < (kMcpAaMinDeg - kMcpEncoderSafetyMarginDeg) ||
+               actualDeg > (kMcpAaMaxDeg + kMcpEncoderSafetyMarginDeg);
+    }
+    return false;
 }
 
 static int findMotorChannel(uint8_t bus, uint8_t id)
@@ -619,6 +655,16 @@ void controlTask(void* parameter)
                     const float trackError = localTargets[jointIndex] - magAngles[jointIndex];
                     if (trackError > kJointMaxTrackErrorDeg || trackError < -kJointMaxTrackErrorDeg) {
                         emergency = true;
+                        const uint32_t nowMs = millis();
+                        if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
+                            lastJointControlDiagMs = nowMs;
+                            Serial.printf("[JOINT SAFETY] tracking error out of range J%02u target=%.2f actual=%.2f error=%.2f limit=%.2f hold motor\r\n",
+                                          (unsigned)jointIndex,
+                                          (double)localTargets[jointIndex],
+                                          (double)magAngles[jointIndex],
+                                          (double)trackError,
+                                          (double)kJointMaxTrackErrorDeg);
+                        }
                     }
                 }
 
@@ -627,6 +673,14 @@ void controlTask(void* parameter)
                     if (motorAbs > kMcpJointModeMotorAbsGuardCounts ||
                         motorAbs < -kMcpJointModeMotorAbsGuardCounts) {
                         emergency = true;
+                        const uint32_t nowMs = millis();
+                        if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
+                            lastJointControlDiagMs = nowMs;
+                            Serial.printf("[JOINT SAFETY] MCP joint motor abs out of range J%02u motorAbs=%ld limit=%ld hold motor\r\n",
+                                          (unsigned)jointIndex,
+                                          (long)motorAbs,
+                                          (long)kMcpJointModeMotorAbsGuardCounts);
+                        }
                     }
                 }
 
@@ -662,17 +716,46 @@ void controlTask(void* parameter)
                         mcpAnyOnline = mcpAnyOnline || mOnline;
 
                         bool mEmergency = !normalOutputAllowed;
+                        if (!mMappedValid || isMcpJointEncoderOutOfRange(tendonIndex, magAngles[tendonIndex])) {
+                            mEmergency = true;
+                            const uint32_t nowMs = millis();
+                            if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
+                                lastJointControlDiagMs = nowMs;
+                                Serial.printf("[JOINT SAFETY] MCP encoder out of range J%02u actual=%.2f allowed=%.1f..%.1f hold motors\r\n",
+                                              (unsigned)tendonIndex,
+                                              (double)magAngles[tendonIndex],
+                                              (double)(tendonIndex == kMcpFeJointIndex ? kMcpFeMinDeg : kMcpAaMinDeg),
+                                              (double)(tendonIndex == kMcpFeJointIndex ? kMcpFeMaxDeg : kMcpAaMaxDeg));
+                            }
+                        }
 
                         const int32_t motorAbs = (mCh >= 0) ? servoData.servoAngles[mCh] : absolutePosition[tendonIndex];
                         if (motorAbs > kMcpJointModeMotorAbsGuardCounts ||
                             motorAbs < -kMcpJointModeMotorAbsGuardCounts) {
                             mEmergency = true;
+                            const uint32_t nowMs = millis();
+                            if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
+                                lastJointControlDiagMs = nowMs;
+                                Serial.printf("[JOINT SAFETY] MCP motor abs out of range M%02u motorAbs=%ld limit=%ld hold motors\r\n",
+                                              (unsigned)tendonIndex,
+                                              (long)motorAbs,
+                                              (long)kMcpJointModeMotorAbsGuardCounts);
+                            }
                         }
 
                         const bool mHotplug =
                             (mCh >= 0) &&
                             (mCh < SERVO_TOTAL_NUM) &&
                             hotplugHoldMotor[mCh];
+                        if (mHotplug) {
+                            const uint32_t nowMs = millis();
+                            if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
+                                lastJointControlDiagMs = nowMs;
+                                Serial.printf("[JOINT SAFETY] MCP hotplug hold M%02u motorAbs=%ld hold motors\r\n",
+                                              (unsigned)tendonIndex,
+                                              (long)((mCh >= 0) ? servoData.servoAngles[mCh] : 0));
+                            }
+                        }
                         mcpEmergency = mcpEmergency || mEmergency;
                         mcpHotplugHold = mcpHotplugHold || mHotplug;
                     }
@@ -685,7 +768,10 @@ void controlTask(void* parameter)
                             const int mCh = findMotorChannel(mBus, mId);
                             const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
                             if (mOnline) {
-                                jointCmdPos[tendonIndex] = clampServoPos(absolutePosition[tendonIndex]);
+                                const int16_t holdPos = clampServoPos(absolutePosition[tendonIndex]);
+                                appendServoTarget(&targetBatch, mBus, mId, holdPos,
+                                    kJointTargetSpeed, kJointTargetAcc);
+                                jointCmdPos[tendonIndex] = holdPos;
                                 jointCmdValid[tendonIndex] = 1;
                             }
                         }
@@ -763,6 +849,43 @@ void controlTask(void* parameter)
                                 kJointTargetSpeed, kJointTargetAcc);
                             jointCmdPos[tendonIndex] = targetPos;
                             jointCmdValid[tendonIndex] = 1;
+                        }
+                        const uint32_t nowMs = millis();
+                        if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
+                            lastJointControlDiagMs = nowMs;
+                            Serial.printf("[MCP CTRL] J00 target=%.2f actual=%.2f J01 target=%.2f actual=%.2f "
+                                          "M00/R targetLen=%.3f actualLen=%.3f mappedMotor=%.1f solver=%ld cmd=%d "
+                                          "M01/L targetLen=%.3f actualLen=%.3f mappedMotor=%.1f solver=%ld cmd=%d "
+                                          "[SERVO TARGET] M00 bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld "
+                                          "M01 bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld\r\n",
+                                          (double)localTargets[0],
+                                          (double)magAngles[0],
+                                          (double)localTargets[1],
+                                          (double)magAngles[1],
+                                          (double)g_controlSolver.getTargetTendonLength(0),
+                                          (double)g_controlSolver.getActualTendonLength(0),
+                                          (double)g_controlSolver.getMappedMotorTarget(0),
+                                          (long)outPulses[0],
+                                          (int)jointCmdPos[0],
+                                          (double)g_controlSolver.getTargetTendonLength(1),
+                                          (double)g_controlSolver.getActualTendonLength(1),
+                                          (double)g_controlSolver.getMappedMotorTarget(1),
+                                          (long)outPulses[1],
+                                          (int)jointCmdPos[1],
+                                          (unsigned)jointMap[0].busIndex,
+                                          (unsigned)jointMap[0].servoID,
+                                          (int)jointCmdPos[0],
+                                          (long)servoData.softwareZeroOffsets[0],
+                                          (long)((int32_t)jointCmdPos[0] + servoData.softwareZeroOffsets[0]),
+                                          (long)servoData.servoAngles[0],
+                                          (long)(servoData.servoAngles[0] + servoData.softwareZeroOffsets[0]),
+                                          (unsigned)jointMap[1].busIndex,
+                                          (unsigned)jointMap[1].servoID,
+                                          (int)jointCmdPos[1],
+                                          (long)servoData.softwareZeroOffsets[1],
+                                          (long)((int32_t)jointCmdPos[1] + servoData.softwareZeroOffsets[1]),
+                                          (long)servoData.servoAngles[1],
+                                          (long)(servoData.servoAngles[1] + servoData.softwareZeroOffsets[1]));
                         }
                     }
                     continue;

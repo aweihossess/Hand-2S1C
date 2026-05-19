@@ -79,7 +79,7 @@ void System_Init() {
     sharedData.motor_direct_command_generation = 0;
     sharedData.motor_direct_command_source = MOTOR_DIRECT_SOURCE_NONE;
     sharedData.control_enabled = 0;
-    sharedData.control_mode = CONTROL_MODE_JOINT;
+    sharedData.control_mode = CONTROL_MODE_NONE;
     sharedData.system_state = SYSTEM_STATE_BOOTING;
     sharedData.servo_target_owner = SERVO_TARGET_OWNER_NONE;
     sharedData.servo_emergency_stop_token = 0;

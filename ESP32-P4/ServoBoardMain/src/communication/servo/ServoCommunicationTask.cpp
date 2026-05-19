@@ -417,6 +417,17 @@ static void configureMappedServosForMultiTurn()
 static void applyServoTargetBatch(const ServoTargetBatch_t& batch)
 {
     bool busWritePending[NUM_BUSES] = {false};
+    struct ServoTargetDiag {
+        bool valid;
+        uint8_t busIndex;
+        uint8_t servoId;
+        int16_t motorTarget;
+        int32_t swZero;
+        int32_t hardwareTarget;
+        int32_t motorAbsNow;
+        int32_t hardwareAbsNow;
+    };
+    ServoTargetDiag mcpDiag[2] = {};
 
     for (uint8_t i = 0; i < batch.count && i < SERVO_TARGET_BATCH_MAX; i++) {
         const ServoTargetCommand_t& cmd = batch.commands[i];
@@ -427,28 +438,46 @@ static void applyServoTargetBatch(const ServoTargetBatch_t& batch)
         bus->enablePositionControl(cmd.servoId);
         if ((cmd.busIndex == motorMap[0].busIndex && cmd.servoId == motorMap[0].servoID) ||
             (cmd.busIndex == motorMap[1].busIndex && cmd.servoId == motorMap[1].servoID)) {
-            const uint32_t nowMs = millis();
-            if (nowMs - g_lastServoTargetDiagMs >= 200) {
-                g_lastServoTargetDiagMs = nowMs;
-                const int32_t swZero = bus->getSoftwareZeroOffset(cmd.servoId);
-                int32_t hardwareTarget = (int32_t)cmd.position + swZero;
-                if (hardwareTarget < -30719) hardwareTarget = -30719;
-                if (hardwareTarget > 30719) hardwareTarget = 30719;
-                const int motorIndex =
-                    (cmd.busIndex == motorMap[0].busIndex && cmd.servoId == motorMap[0].servoID) ? 0 : 1;
-                Serial.printf("[SERVO TARGET] M%02d bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld\r\n",
-                              motorIndex,
-                              (unsigned)cmd.busIndex,
-                              (unsigned)cmd.servoId,
-                              (int)cmd.position,
-                              (long)swZero,
-                              (long)hardwareTarget,
-                              (long)bus->getAbsolutePosition(cmd.servoId),
-                              (long)bus->getHardwareAbsolutePosition(cmd.servoId));
-            }
+            const uint8_t motorIndex =
+                (cmd.busIndex == motorMap[0].busIndex && cmd.servoId == motorMap[0].servoID) ? 0 : 1;
+            ServoTargetDiag& diag = mcpDiag[motorIndex];
+            diag.valid = true;
+            diag.busIndex = cmd.busIndex;
+            diag.servoId = cmd.servoId;
+            diag.motorTarget = cmd.position;
+            diag.swZero = bus->getSoftwareZeroOffset(cmd.servoId);
+            diag.hardwareTarget = (int32_t)cmd.position + diag.swZero;
+            if (diag.hardwareTarget < -30719) diag.hardwareTarget = -30719;
+            if (diag.hardwareTarget > 30719) diag.hardwareTarget = 30719;
+            diag.motorAbsNow = bus->getAbsolutePosition(cmd.servoId);
+            diag.hardwareAbsNow = bus->getHardwareAbsolutePosition(cmd.servoId);
         }
         bus->setTarget(cmd.servoId, cmd.position, cmd.speed, cmd.acc);
         busWritePending[cmd.busIndex] = true;
+    }
+
+    const uint32_t nowMs = millis();
+    if (false &&
+        (mcpDiag[0].valid || mcpDiag[1].valid) &&
+        nowMs - g_lastServoTargetDiagMs >= 1000) {
+        g_lastServoTargetDiagMs = nowMs;
+        Serial.print("[SERVO TARGET]");
+        for (uint8_t motorIndex = 0; motorIndex < 2; motorIndex++) {
+            if (!mcpDiag[motorIndex].valid) {
+                continue;
+            }
+            const ServoTargetDiag& diag = mcpDiag[motorIndex];
+            Serial.printf(" M%02u bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld",
+                          (unsigned)motorIndex,
+                          (unsigned)diag.busIndex,
+                          (unsigned)diag.servoId,
+                          (int)diag.motorTarget,
+                          (long)diag.swZero,
+                          (long)diag.hardwareTarget,
+                          (long)diag.motorAbsNow,
+                          (long)diag.hardwareAbsNow);
+        }
+        Serial.print("\r\n");
     }
 
     for (uint8_t busIndex = 0; busIndex < NUM_BUSES; busIndex++) {

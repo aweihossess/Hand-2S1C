@@ -11,7 +11,7 @@ static const float kDefaultQFbMaxDeg = 360.0f;
 static const float kDegToRad = 0.017453292519943295f;
 static const float kControlPeriodSec = 0.01f;
 static const float kDefaultTendonMotorOutputLimit = 4096.0f;
-static const float kMcpMotorAbsLimitCounts = 1200.0f;
+static const float kMcpMotorAbsLimitCounts = 6400.0f;
 
 static const uint8_t kMcpLTendonIndex = 0;
 static const uint8_t kMcpRTendonIndex = 1;
@@ -157,14 +157,16 @@ bool ControlSolver::computeTendonFeedforward(float* targetDegs,
     }
 
     if (JOINT_COUNT > kMcpTheta2Joint) {
+        // Physical motor placement is swapped: M00 drives the model R tendon,
+        // and M01 drives the model L tendon.
         _targetTendonLength[kMcpLTendonIndex] =
-            computeMcpLTendonLength(qRef[kMcpTheta1Joint], qRef[kMcpTheta2Joint]);
-        _actualTendonLength[kMcpLTendonIndex] =
-            computeMcpLTendonLength(qFb[kMcpTheta1Joint], qFb[kMcpTheta2Joint]);
-        _targetTendonLength[kMcpRTendonIndex] =
             computeMcpRTendonLength(qRef[kMcpTheta1Joint], qRef[kMcpTheta2Joint]);
-        _actualTendonLength[kMcpRTendonIndex] =
+        _actualTendonLength[kMcpLTendonIndex] =
             computeMcpRTendonLength(qFb[kMcpTheta1Joint], qFb[kMcpTheta2Joint]);
+        _targetTendonLength[kMcpRTendonIndex] =
+            computeMcpLTendonLength(qRef[kMcpTheta1Joint], qRef[kMcpTheta2Joint]);
+        _actualTendonLength[kMcpRTendonIndex] =
+            computeMcpLTendonLength(qFb[kMcpTheta1Joint], qFb[kMcpTheta2Joint]);
 
         outServoPulses[kMcpLTendonIndex] =
             computeTendonCascadeOutput(kMcpLTendonIndex, absolutePosition[kMcpLTendonIndex]);
@@ -276,8 +278,8 @@ float ControlSolver::computeMcpRTendonLength(float theta1Deg, float theta2Deg) c
 
 float ControlSolver::getTendonModelZeroLength(uint8_t tendonIndex) const
 {
-    if (tendonIndex == kMcpLTendonIndex) return computeMcpLTendonLength(0.0f, 0.0f);
-    if (tendonIndex == kMcpRTendonIndex) return computeMcpRTendonLength(0.0f, 0.0f);
+    if (tendonIndex == kMcpLTendonIndex) return computeMcpRTendonLength(0.0f, 0.0f);
+    if (tendonIndex == kMcpRTendonIndex) return computeMcpLTendonLength(0.0f, 0.0f);
     return 0.0f;
 }
 
@@ -303,7 +305,7 @@ int16_t ControlSolver::computeTendonCascadeOutput(uint8_t tendonIndex, int32_t a
     float feedbackCorrectionMm =
         _tendonKp[tendonIndex] * lengthError +
         _tendonKd[tendonIndex] * lengthErrorDelta;
-    feedbackCorrectionMm = clampFloat(feedbackCorrectionMm, -0.2f, 0.2f);
+    feedbackCorrectionMm = clampFloat(feedbackCorrectionMm, -2.0f, 2.0f);
     _tendonPrevLengthError[tendonIndex] = lengthError;
 
     const float feedforwardMm =
