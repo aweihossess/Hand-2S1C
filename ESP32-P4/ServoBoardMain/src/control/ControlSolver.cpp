@@ -13,18 +13,12 @@ static const float kControlPeriodSec = 0.01f;
 static const float kDefaultTendonMotorOutputLimit = 4096.0f;
 static const float kMcpMotorAbsLimitCounts = 6400.0f;
 
-static const uint8_t kMcpLTendonIndex = 0;
-static const uint8_t kMcpRTendonIndex = 1;
+static const uint8_t kMcpControlledMotorCount = 3;
+static const uint8_t kMcpRTendonIndex = 0;
+static const uint8_t kMcpLTendonIndex = 1;
+static const uint8_t kMcpCTendonIndex = 2;
 static const uint8_t kMcpTheta1Joint = 0;
 static const uint8_t kMcpTheta2Joint = 1;
-
-static const float kMcpX1 = -3.66f;
-static const float kMcpY1 = -3.43f;
-static const float kMcpZ1 = 8.58f;
-static const float kMcpL1 = 13.00f;
-static const float kMcpL2 = 10.854f;
-static const float kMcpL3 = 4.5f;
-static const float kMcpThetaOffsetRad = 0.6109f;
 
 static const int8_t kJointMotorDirection[JOINT_COUNT] = {
     -1, -1, 1, 1, 1, 1, 1,
@@ -160,15 +154,25 @@ bool ControlSolver::computeTendonFeedforward(float* targetDegs,
 
     if (JOINT_COUNT > kMcpTheta2Joint) {
         // Physical motor placement is swapped: M00 drives the model R tendon,
-        // and M01 drives the model L tendon.
-        _targetTendonLength[kMcpLTendonIndex] =
+        // M01 drives the model L tendon, and M02 drives the independent C tendon.
+        const float targetR =
             computeMcpRTendonLength(qRef[kMcpTheta1Joint], qRef[kMcpTheta2Joint]);
-        _actualTendonLength[kMcpLTendonIndex] =
+        const float actualR =
             computeMcpRTendonLength(qFb[kMcpTheta1Joint], qFb[kMcpTheta2Joint]);
-        _targetTendonLength[kMcpRTendonIndex] =
+        const float targetL =
             computeMcpLTendonLength(qRef[kMcpTheta1Joint], qRef[kMcpTheta2Joint]);
-        _actualTendonLength[kMcpRTendonIndex] =
+        const float actualL =
             computeMcpLTendonLength(qFb[kMcpTheta1Joint], qFb[kMcpTheta2Joint]);
+        const float targetC =
+            computeMcpCTendonLength(qRef[kMcpTheta1Joint], qRef[kMcpTheta2Joint]);
+        const float actualC =
+            computeMcpCTendonLength(qFb[kMcpTheta1Joint], qFb[kMcpTheta2Joint]);
+        _targetTendonLength[kMcpRTendonIndex] = targetR;
+        _actualTendonLength[kMcpRTendonIndex] = actualR;
+        _targetTendonLength[kMcpLTendonIndex] = targetL;
+        _actualTendonLength[kMcpLTendonIndex] = actualL;
+        _targetTendonLength[kMcpCTendonIndex] = targetC;
+        _actualTendonLength[kMcpCTendonIndex] = actualC;
 
         const float error0 = qRef[kMcpTheta1Joint] - qFb[kMcpTheta1Joint];
         const float error1 = qRef[kMcpTheta2Joint] - qFb[kMcpTheta2Joint];
@@ -183,10 +187,10 @@ bool ControlSolver::computeTendonFeedforward(float* targetDegs,
             -kMcpAngleIntegralLimitDegSec[kMcpTheta2Joint],
             kMcpAngleIntegralLimitDegSec[kMcpTheta2Joint]);
 
-        outServoPulses[kMcpLTendonIndex] =
-            computeTendonCascadeOutput(kMcpLTendonIndex, absolutePosition[kMcpLTendonIndex]);
-        outServoPulses[kMcpRTendonIndex] =
-            computeTendonCascadeOutput(kMcpRTendonIndex, absolutePosition[kMcpRTendonIndex]);
+        for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
+            outServoPulses[tendonIndex] =
+                computeTendonCascadeOutput(tendonIndex, absolutePosition[tendonIndex]);
+        }
         _jointPrevError[kMcpTheta1Joint] = error0;
         _jointPrevError[kMcpTheta2Joint] = error1;
     }
@@ -269,12 +273,14 @@ float ControlSolver::computeMcpLTendonLength(float theta1Deg, float theta2Deg) c
     if (!isfinite(theta2Deg)) theta2Deg = 0.0f;
 
     const float theta1 = theta1Deg * kDegToRad;
-    const float theta2 = theta2Deg * kDegToRad + kMcpThetaOffsetRad;
-    const float projected = kMcpL1 + kMcpL2 * cosf(theta2);
+    const float theta2 = (theta2Deg + kMcpThetaOffsetDeg) * kDegToRad;
+    const float projected = kMcpGeometryL1Mm + kMcpGeometryL2Mm * cosf(theta2);
 
-    const float dx = cosf(theta1) * projected - kMcpL3 * sinf(theta1) - kMcpX1;
-    const float dy = -kMcpL2 * sinf(theta2) - kMcpY1;
-    const float dz = sinf(theta1) * projected + kMcpL3 * cosf(theta1) - kMcpZ1;
+    const float dx = cosf(theta1) * projected -
+        kMcpGeometryL3Mm * sinf(theta1) - kMcpGeometryX1Mm;
+    const float dy = -kMcpGeometryL2Mm * sinf(theta2) - kMcpGeometryY1Mm;
+    const float dz = sinf(theta1) * projected +
+        kMcpGeometryL3Mm * cosf(theta1) - kMcpGeometryZ1Mm;
     return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
@@ -284,19 +290,40 @@ float ControlSolver::computeMcpRTendonLength(float theta1Deg, float theta2Deg) c
     if (!isfinite(theta2Deg)) theta2Deg = 0.0f;
 
     const float theta1 = theta1Deg * kDegToRad;
-    const float theta2 = theta2Deg * kDegToRad + kMcpThetaOffsetRad;
-    const float projected = kMcpL1 + kMcpL2 * cosf(theta2);
+    const float theta2 = (theta2Deg + kMcpThetaOffsetDeg) * kDegToRad;
+    const float projected = kMcpGeometryL1Mm + kMcpGeometryL2Mm * cosf(theta2);
 
-    const float dx = cosf(theta1) * projected + kMcpL3 * sinf(theta1) - kMcpX1;
-    const float dy = -kMcpL2 * sinf(theta2) - kMcpY1;
-    const float dz = sinf(theta1) * projected - kMcpL3 * cosf(theta1) + kMcpZ1;
+    const float dx = cosf(theta1) * projected +
+        kMcpGeometryL3Mm * sinf(theta1) - kMcpGeometryX1Mm;
+    const float dy = -kMcpGeometryL2Mm * sinf(theta2) - kMcpGeometryY1Mm;
+    const float dz = sinf(theta1) * projected -
+        kMcpGeometryL3Mm * cosf(theta1) + kMcpGeometryZ1Mm;
+    return sqrtf(dx * dx + dy * dy + dz * dz);
+}
+
+float ControlSolver::computeMcpCTendonLength(float theta1Deg, float theta2Deg) const
+{
+    if (!isfinite(theta1Deg)) theta1Deg = 0.0f;
+    if (!isfinite(theta2Deg)) theta2Deg = 0.0f;
+
+    const float theta1 = theta1Deg * kDegToRad;
+    const float theta2 = (theta2Deg + kMcpTheta4Deg) * kDegToRad;
+    const float projected = kMcpGeometryL1Mm + kMcpGeometryL4Mm * cosf(theta2);
+
+    const float dx = cosf(theta1) * projected - kMcpGeometryX3Mm;
+    const float dy = -kMcpGeometryL4Mm * sinf(theta2) - kMcpGeometryY3Mm;
+    const float dz = sinf(theta1) * projected - kMcpGeometryZ3Mm;
     return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
 float ControlSolver::getTendonModelZeroLength(uint8_t tendonIndex) const
 {
-    if (tendonIndex == kMcpLTendonIndex) return computeMcpRTendonLength(0.0f, 0.0f);
-    if (tendonIndex == kMcpRTendonIndex) return computeMcpLTendonLength(0.0f, 0.0f);
+    const float zeroR = computeMcpRTendonLength(0.0f, 0.0f);
+    const float zeroL = computeMcpLTendonLength(0.0f, 0.0f);
+    const float zeroC = computeMcpCTendonLength(0.0f, 0.0f);
+    if (tendonIndex == kMcpRTendonIndex) return zeroR;
+    if (tendonIndex == kMcpLTendonIndex) return zeroL;
+    if (tendonIndex == kMcpCTendonIndex) return zeroC;
     return 0.0f;
 }
 

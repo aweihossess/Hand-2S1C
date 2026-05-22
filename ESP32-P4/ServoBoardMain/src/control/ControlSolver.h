@@ -46,6 +46,7 @@ private:
     float clampFeedbackDeg(uint8_t jointIndex, float feedbackDeg) const;
     float computeMcpLTendonLength(float theta1Deg, float theta2Deg) const;
     float computeMcpRTendonLength(float theta1Deg, float theta2Deg) const;
+    float computeMcpCTendonLength(float theta1Deg, float theta2Deg) const;
     float getTendonModelZeroLength(uint8_t tendonIndex) const;
     int16_t computeTendonCascadeOutput(uint8_t tendonIndex, int32_t actualMotorAbs);
     bool computeDualLoopPid(float* targetDegs,

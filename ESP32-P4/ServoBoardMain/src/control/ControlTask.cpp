@@ -35,6 +35,7 @@ static const int32_t kMcpJointModeMotorAbsGuardCounts = 6400;
 static const uint32_t kJointControlDiagIntervalMs = 1000;
 static const uint32_t kJointDebugIntervalMs = 50;
 static const bool kEnableReleaseGuard = false;
+static const uint8_t kMcpControlledMotorCount = 3;
 static const uint8_t kMcpAaJointIndex = 0;
 static const uint8_t kMcpFeJointIndex = 1;
 static const float kMcpFeMinDeg = -20.0f;
@@ -697,7 +698,7 @@ void controlTask(void* parameter)
 
                 if (bus >= NUM_BUSES) continue;
                 if (!controlEnabled) continue;
-                if (jointIndex == 1) {
+                if (jointIndex == 1 || jointIndex == 2) {
                     continue;
                 }
                 if (jointIndex == 0)
@@ -707,28 +708,30 @@ void controlTask(void* parameter)
                     bool mcpAllZeroReached = true;
                     bool mcpAnyOnline = false;
 
-                    for (uint8_t tendonIndex = 0; tendonIndex <= 1; tendonIndex++) {
-                        const uint8_t mBus = jointMap[tendonIndex].busIndex;
-                        const uint8_t mId = jointMap[tendonIndex].servoID;
-                        const int mCh = findMotorChannel(mBus, mId);
-                        const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
-                        const bool mMappedValid = canBusOnline && (mappedData.validFlags[tendonIndex] != 0);
-                        mcpAnyOnline = mcpAnyOnline || mOnline;
-
-                        bool mEmergency = !normalOutputAllowed;
-                        if (!mMappedValid || isMcpJointEncoderOutOfRange(tendonIndex, magAngles[tendonIndex])) {
-                            mEmergency = true;
+                    for (uint8_t mcpJointIndex = 0; mcpJointIndex <= 1; mcpJointIndex++) {
+                        const bool mMappedValid = canBusOnline && (mappedData.validFlags[mcpJointIndex] != 0);
+                        if (!mMappedValid || isMcpJointEncoderOutOfRange(mcpJointIndex, magAngles[mcpJointIndex])) {
+                            mcpEmergency = true;
                             const uint32_t nowMs = millis();
                             if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
                                 lastJointControlDiagMs = nowMs;
                                 Serial.printf("[JOINT SAFETY] MCP encoder out of range J%02u actual=%.2f allowed=%.1f..%.1f hold motors\r\n",
-                                              (unsigned)tendonIndex,
-                                              (double)magAngles[tendonIndex],
-                                              (double)(tendonIndex == kMcpFeJointIndex ? kMcpFeMinDeg : kMcpAaMinDeg),
-                                              (double)(tendonIndex == kMcpFeJointIndex ? kMcpFeMaxDeg : kMcpAaMaxDeg));
+                                              (unsigned)mcpJointIndex,
+                                              (double)magAngles[mcpJointIndex],
+                                              (double)(mcpJointIndex == kMcpFeJointIndex ? kMcpFeMinDeg : kMcpAaMinDeg),
+                                              (double)(mcpJointIndex == kMcpFeJointIndex ? kMcpFeMaxDeg : kMcpAaMaxDeg));
                             }
                         }
+                    }
 
+                    for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
+                        const uint8_t mBus = jointMap[tendonIndex].busIndex;
+                        const uint8_t mId = jointMap[tendonIndex].servoID;
+                        const int mCh = findMotorChannel(mBus, mId);
+                        const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
+                        mcpAnyOnline = mcpAnyOnline || mOnline;
+
+                        bool mEmergency = !normalOutputAllowed;
                         const int32_t motorAbs = (mCh >= 0) ? servoData.servoAngles[mCh] : absolutePosition[tendonIndex];
                         if (motorAbs > kMcpJointModeMotorAbsGuardCounts ||
                             motorAbs < -kMcpJointModeMotorAbsGuardCounts) {
@@ -762,7 +765,7 @@ void controlTask(void* parameter)
 
                     if (mcpEmergency)
                     {
-                        for (uint8_t tendonIndex = 0; tendonIndex <= 1; tendonIndex++) {
+                        for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
                             const uint8_t mBus = jointMap[tendonIndex].busIndex;
                             const uint8_t mId = jointMap[tendonIndex].servoID;
                             const int mCh = findMotorChannel(mBus, mId);
@@ -780,7 +783,7 @@ void controlTask(void* parameter)
 
                     if (jointZeroHomingActive)
                     {
-                        for (uint8_t tendonIndex = 0; tendonIndex <= 1; tendonIndex++) {
+                        for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
                             const uint8_t mBus = jointMap[tendonIndex].busIndex;
                             const uint8_t mId = jointMap[tendonIndex].servoID;
                             const int mCh = findMotorChannel(mBus, mId);
@@ -806,7 +809,7 @@ void controlTask(void* parameter)
 
                     if (mcpHotplugHold)
                     {
-                        for (uint8_t tendonIndex = 0; tendonIndex <= 1; tendonIndex++) {
+                        for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
                             const uint8_t mBus = jointMap[tendonIndex].busIndex;
                             const uint8_t mId = jointMap[tendonIndex].servoID;
                             const int mCh = findMotorChannel(mBus, mId);
@@ -823,7 +826,7 @@ void controlTask(void* parameter)
                     }
 
                     if (mcpAnyOnline) {
-                        for (uint8_t tendonIndex = 0; tendonIndex <= 1; tendonIndex++) {
+                        for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
                             const uint8_t mBus = jointMap[tendonIndex].busIndex;
                             const uint8_t mId = jointMap[tendonIndex].servoID;
                             const int mCh = findMotorChannel(mBus, mId);
@@ -856,8 +859,10 @@ void controlTask(void* parameter)
                             Serial.printf("[MCP CTRL] J00 target=%.2f actual=%.2f J01 target=%.2f actual=%.2f "
                                           "M00/R targetLen=%.3f actualLen=%.3f mappedMotor=%.1f solver=%ld cmd=%d "
                                           "M01/L targetLen=%.3f actualLen=%.3f mappedMotor=%.1f solver=%ld cmd=%d "
+                                          "M02/C targetLen=%.3f actualLen=%.3f mappedMotor=%.1f solver=%ld cmd=%d "
                                           "[SERVO TARGET] M00 bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld "
-                                          "M01 bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld\r\n",
+                                          "M01 bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld "
+                                          "M02 bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld\r\n",
                                           (double)localTargets[0],
                                           (double)magAngles[0],
                                           (double)localTargets[1],
@@ -872,6 +877,11 @@ void controlTask(void* parameter)
                                           (double)g_controlSolver.getMappedMotorTarget(1),
                                           (long)outPulses[1],
                                           (int)jointCmdPos[1],
+                                          (double)g_controlSolver.getTargetTendonLength(2),
+                                          (double)g_controlSolver.getActualTendonLength(2),
+                                          (double)g_controlSolver.getMappedMotorTarget(2),
+                                          (long)outPulses[2],
+                                          (int)jointCmdPos[2],
                                           (unsigned)jointMap[0].busIndex,
                                           (unsigned)jointMap[0].servoID,
                                           (int)jointCmdPos[0],
@@ -885,7 +895,14 @@ void controlTask(void* parameter)
                                           (long)servoData.softwareZeroOffsets[1],
                                           (long)((int32_t)jointCmdPos[1] + servoData.softwareZeroOffsets[1]),
                                           (long)servoData.servoAngles[1],
-                                          (long)(servoData.servoAngles[1] + servoData.softwareZeroOffsets[1]));
+                                          (long)(servoData.servoAngles[1] + servoData.softwareZeroOffsets[1]),
+                                          (unsigned)jointMap[2].busIndex,
+                                          (unsigned)jointMap[2].servoID,
+                                          (int)jointCmdPos[2],
+                                          (long)servoData.softwareZeroOffsets[2],
+                                          (long)((int32_t)jointCmdPos[2] + servoData.softwareZeroOffsets[2]),
+                                          (long)servoData.servoAngles[2],
+                                          (long)(servoData.servoAngles[2] + servoData.softwareZeroOffsets[2]));
                         }
                     }
                     continue;

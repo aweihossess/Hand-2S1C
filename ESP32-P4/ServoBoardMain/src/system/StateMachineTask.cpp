@@ -13,7 +13,7 @@ static const uint8_t kServoOfflineFaultCycles = 30;
 // 调试场景：当前仅连接了 2 路电机（channel 0/1），只检查这两路在线状态。
 // 若后续恢复全量硬件，请把这两个开关改回 true，并补全检查通道。
 static const bool kRequireAllServoOnline = false;
-static const uint8_t kRequiredServoChannels[] = {0, 1};
+static const uint8_t kRequiredServoChannels[] = {0, 1, 2};
 static const bool kEnableJoint16DualFaultCheck = false;
 
 bool postSystemEvent(TaskSharedData_t* sharedData, uint8_t event)
