@@ -42,6 +42,7 @@ public:
 
 private:
     float updateTargetReference(uint8_t jointIndex, float targetDeg);
+    float updateTargetReferenceFromFeedback(uint8_t jointIndex, float targetDeg, float feedbackDeg);
     float updateFeedbackFilter(uint8_t jointIndex, float feedbackDeg);
     float clampFeedbackDeg(uint8_t jointIndex, float feedbackDeg) const;
     float computeMcpLTendonLength(float theta1Deg, float theta2Deg) const;

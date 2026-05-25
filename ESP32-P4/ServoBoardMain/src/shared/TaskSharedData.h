@@ -208,6 +208,7 @@ typedef struct {
     // 舵机遥测数据，按 motorMap 通道顺序排列。
     int16_t speed[SERVO_TOTAL_NUM];
     int16_t load[SERVO_TOTAL_NUM];
+    int16_t current[SERVO_TOTAL_NUM];
     uint8_t voltage[SERVO_TOTAL_NUM];
     uint8_t temperature[SERVO_TOTAL_NUM];
     uint8_t onlineStatus[SERVO_TOTAL_NUM];

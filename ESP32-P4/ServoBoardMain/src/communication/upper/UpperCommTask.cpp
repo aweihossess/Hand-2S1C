@@ -601,6 +601,50 @@ static bool parseTextJointTargetCommand(const char* cmd, uint8_t* jointOut, floa
     return true;
 }
 
+static bool parseTextMcpAnglePairCommand(const char* cmd, float* j00Out, float* j01Out)
+{
+    if (!cmd || !j00Out || !j01Out) {
+        return false;
+    }
+
+    const char* p = skipTextSpaces(cmd);
+    if (!p) {
+        return false;
+    }
+
+    if ((p[0] == 'j' || p[0] == 'm') && (p[1] == '\0' || p[1] == ' ' || p[1] == '\t' || p[1] == '=' || p[1] == ':')) {
+        p++;
+        return parseTextFloat(p, j00Out, &p) && parseTextFloat(p, j01Out, NULL);
+    }
+
+    uint8_t seenMask = 0;
+    float values[2] = {0.0f, 0.0f};
+    while (p && *p) {
+        p = skipTextSpaces(p);
+        if (!p || *p == '\0') {
+            break;
+        }
+        if ((*p != 'j' && *p != 'm') || (p[1] != '0' && p[1] != '1')) {
+            return false;
+        }
+        const uint8_t index = (uint8_t)(p[1] - '0');
+        p += 2;
+        float value = 0.0f;
+        if (!parseTextFloat(p, &value, &p)) {
+            return false;
+        }
+        values[index] = value;
+        seenMask |= (uint8_t)(1U << index);
+    }
+
+    if (seenMask != 0x03) {
+        return false;
+    }
+    *j00Out = values[0];
+    *j01Out = values[1];
+    return true;
+}
+
 static float clampTextJointTargetDeg(float targetDeg, uint8_t joint, bool* clamped)
 {
     float minDeg = 0.0f;
@@ -758,6 +802,48 @@ static void applyTextJointTarget(TaskSharedData_t* sharedData, uint8_t joint, fl
                   (unsigned)(targetClamped ? 1 : 0));
 }
 
+static void applyTextMcpAnglePairTarget(TaskSharedData_t* sharedData, float j00Deg, float j01Deg)
+{
+    if (!sharedData) {
+        return;
+    }
+
+    if (sharedData->control_mode != CONTROL_MODE_JOINT) {
+        Serial.printf("<<<JOINT_TARGET rejected: mode=%u send DEGREE first>>>\r\n",
+                      (unsigned)sharedData->control_mode);
+        return;
+    }
+
+    float targets[ENCODER_TOTAL_NUM] = {0.0f};
+    SemaphoreHandle_t lock = sharedData->commandStateMutex ? sharedData->commandStateMutex : sharedData->targetAnglesMutex;
+    if (lock && xSemaphoreTake(lock, pdMS_TO_TICKS(10)) != pdTRUE) {
+        Serial.println("<<<JOINT_TARGET lock_timeout>>>");
+        return;
+    }
+
+    for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++) {
+        targets[i] = sharedData->targetAngles[i];
+    }
+    if (lock) {
+        xSemaphoreGive(lock);
+    }
+
+    bool j00Clamped = false;
+    bool j01Clamped = false;
+    const float appliedJ00 = clampTextJointTargetDeg(j00Deg, 0, &j00Clamped);
+    const float appliedJ01 = clampTextJointTargetDeg(j01Deg, 1, &j01Clamped);
+    targets[0] = appliedJ00;
+    targets[1] = appliedJ01;
+    upperApplyTargetAngles(sharedData, targets, ENCODER_TOTAL_NUM);
+    Serial.printf("<<<JOINT_TARGET_PAIR J00 target_deg=%.2f applied_deg=%.2f clamped=%u J01 target_deg=%.2f applied_deg=%.2f clamped=%u mode=degree>>>\r\n",
+                  (double)j00Deg,
+                  (double)appliedJ00,
+                  (unsigned)(j00Clamped ? 1 : 0),
+                  (double)j01Deg,
+                  (double)appliedJ01,
+                  (unsigned)(j01Clamped ? 1 : 0));
+}
+
 static void printServoTextSnapshot(TaskSharedData_t* sharedData)
 {
     if (!sharedData || !sharedData->servoAngleQueue) {
@@ -786,6 +872,75 @@ static void printServoTextSnapshot(TaskSharedData_t* sharedData)
                       (long)swZeroOfs,
                       (unsigned)servoData.onlineStatus[i]);
     }
+}
+
+static void printLoadTextSnapshot(TaskSharedData_t* sharedData, int channelFilter)
+{
+    if (!sharedData) {
+        Serial.println("<<<LOAD no_shared_data>>>");
+        return;
+    }
+
+    ServoTelemetryData_t telemetry;
+    QueueHandle_t queue =
+        sharedData->servoTelemetrySnapshotQueue ? sharedData->servoTelemetrySnapshotQueue : sharedData->servoTelemetryQueue;
+    if (!queue || xQueuePeek(queue, &telemetry, 0) != pdTRUE) {
+        Serial.println("<<<LOAD no_data>>>");
+        return;
+    }
+
+    if (channelFilter >= SERVO_TOTAL_NUM) {
+        Serial.printf("<<<LOAD bad_channel=%d>>>\r\n", channelFilter);
+        return;
+    }
+
+    Serial.printf("<<<LOAD timestamp=%lu>>>\r\n", (unsigned long)telemetry.timestamp);
+    for (uint8_t i = 0; i < SERVO_TOTAL_NUM; i++) {
+        if (channelFilter >= 0 && i != (uint8_t)channelFilter) {
+            continue;
+        }
+        if (telemetry.onlineStatus[i] == 0) {
+            if (channelFilter >= 0) {
+                Serial.printf("<<<LOAD M%02u online=0>>>\r\n", (unsigned)i);
+            }
+            continue;
+        }
+        Serial.printf("<<<LOAD M%02u load=%d current=%d speed=%d voltage=%u temperature=%u online=%u>>>\r\n",
+                      (unsigned)i,
+                      (int)telemetry.load[i],
+                      (int)telemetry.current[i],
+                      (int)telemetry.speed[i],
+                      (unsigned)telemetry.voltage[i],
+                      (unsigned)telemetry.temperature[i],
+                      (unsigned)telemetry.onlineStatus[i]);
+    }
+}
+
+static int parseOptionalLoadChannel(const char* cmd)
+{
+    if (!cmd) {
+        return -1;
+    }
+
+    const char* p = cmd + 4;
+    while (*p == ' ' || *p == '\t' || *p == ':' || *p == '=') {
+        p++;
+    }
+    if (*p == '\0') {
+        return -1;
+    }
+    if (*p == 'm') {
+        p++;
+    }
+
+    int32_t channel = -1;
+    if (!parseTextInt32(p, &channel, NULL)) {
+        return -2;
+    }
+    if (channel < 0 || channel >= SERVO_TOTAL_NUM) {
+        return -2;
+    }
+    return (int)channel;
 }
 
 static void printEncoderTextSnapshot(TaskSharedData_t* sharedData)
@@ -919,6 +1074,15 @@ static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* l
         printServoTextSnapshot(sharedData);
         return true;
     }
+    if (strncmp(cmd, "load", 4) == 0) {
+        const int channelFilter = parseOptionalLoadChannel(cmd);
+        if (channelFilter == -2) {
+            Serial.println("<<<LOAD bad_channel>>>");
+        } else {
+            printLoadTextSnapshot(sharedData, channelFilter);
+        }
+        return true;
+    }
     if (textEquals(cmd, "encoder") || textEquals(cmd, "enc")) {
         printEncoderTextSnapshot(sharedData);
         return true;
@@ -933,6 +1097,12 @@ static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* l
     }
     if (textEquals(cmd, "none") || textEquals(cmd, "idle")) {
         selectTextControlMode(sharedData, CONTROL_MODE_NONE);
+        return true;
+    }
+    float pairJ00 = 0.0f;
+    float pairJ01 = 0.0f;
+    if (parseTextMcpAnglePairCommand(cmd, &pairJ00, &pairJ01)) {
+        applyTextMcpAnglePairTarget(sharedData, pairJ00, pairJ01);
         return true;
     }
     uint8_t motorChannel = 0;

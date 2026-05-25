@@ -144,8 +144,10 @@ bool ControlSolver::computeTendonFeedforward(float* targetDegs,
     float qRef[JOINT_COUNT];
     float qFb[JOINT_COUNT];
     for (uint8_t i = 0; i < JOINT_COUNT; i++) {
-        qRef[i] = updateTargetReference(i, targetDegs[i]);
         qFb[i] = updateFeedbackFilter(i, magActualDegs[i]);
+    }
+    for (uint8_t i = 0; i < JOINT_COUNT; i++) {
+        qRef[i] = updateTargetReferenceFromFeedback(i, targetDegs[i], qFb[i]);
     }
 
     if (!computeDualLoopPid(qRef, qFb, absolutePosition, motorZeroAbs, outServoPulses)) {
@@ -221,6 +223,20 @@ float ControlSolver::updateTargetReference(uint8_t jointIndex, float targetDeg)
         _qRef[jointIndex] = targetDeg;
     }
     return _qRef[jointIndex];
+}
+
+float ControlSolver::updateTargetReferenceFromFeedback(uint8_t jointIndex, float targetDeg, float feedbackDeg)
+{
+    if (jointIndex >= JOINT_COUNT) return 0.0f;
+    if (!isfinite(targetDeg)) targetDeg = 0.0f;
+    if (!isfinite(feedbackDeg)) feedbackDeg = targetDeg;
+
+    if (!_qRefInitialized[jointIndex]) {
+        _qRef[jointIndex] = feedbackDeg;
+        _qRefInitialized[jointIndex] = true;
+    }
+
+    return updateTargetReference(jointIndex, targetDeg);
 }
 
 float ControlSolver::updateFeedbackFilter(uint8_t jointIndex, float feedbackDeg)
@@ -332,7 +348,7 @@ int16_t ControlSolver::computeTendonCascadeOutput(uint8_t tendonIndex, int32_t a
     if (tendonIndex >= JOINT_COUNT) return 0;
 
     if (!_tendonControllerInitialized[tendonIndex]) {
-        _tendonZeroLength[tendonIndex] = getTendonModelZeroLength(tendonIndex);
+        _tendonZeroLength[tendonIndex] = _targetTendonLength[tendonIndex];
         _tendonPrevMotorError[tendonIndex] = 0.0f;
         _tendonControllerInitialized[tendonIndex] = true;
     }

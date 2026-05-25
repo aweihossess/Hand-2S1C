@@ -1,0 +1,44 @@
+{
+  "baud": 921600,
+  "period_s": 0.02,
+  "idle_samples": 40,
+  "i_low_counts": 20,
+  "i_high_counts": 45,
+  "tighten_step": 1,
+  "release_step": 4,
+  "bias_max_each": 120,
+  "bias_total_max": 240,
+  "max_target_step": 160,
+  "motor_abs_guard": 6400,
+  "motors": [
+    {
+      "channel": 0,
+      "name": "M00/R",
+      "tighten_dir": 1
+    },
+    {
+      "channel": 1,
+      "name": "M01/L",
+      "tighten_dir": 1
+    },
+    {
+      "channel": 2,
+      "name": "M02/C",
+      "tighten_dir": 1
+    }
+  ],
+  "joints": [
+    {
+      "index": 0,
+      "name": "J00",
+      "safe_min_deg": -20.0,
+      "safe_max_deg": 30.0
+    },
+    {
+      "index": 1,
+      "name": "J01",
+      "safe_min_deg": -20.0,
+      "safe_max_deg": 80.0
+    }
+  ]
+}

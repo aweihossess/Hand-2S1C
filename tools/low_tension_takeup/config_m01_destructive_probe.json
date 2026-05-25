@@ -1,0 +1,21 @@
+{
+  "baud": 921600,
+  "period_s": 0.02,
+  "idle_samples": 40,
+  "i_low_counts": 20,
+  "i_high_counts": 45,
+  "tighten_step": 1,
+  "release_step": 4,
+  "bias_max_each": 30000,
+  "bias_total_max": 30000,
+  "max_target_step": 160,
+  "motor_abs_guard": 30000,
+  "motors": [
+    {
+      "channel": 1,
+      "name": "M01/destructive_limit_probe",
+      "tighten_dir": 1
+    }
+  ],
+  "joints": []
+}

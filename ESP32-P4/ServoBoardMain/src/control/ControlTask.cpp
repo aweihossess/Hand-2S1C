@@ -36,6 +36,14 @@ static const uint32_t kJointControlDiagIntervalMs = 1000;
 static const uint32_t kJointDebugIntervalMs = 50;
 static const bool kEnableReleaseGuard = false;
 static const uint8_t kMcpControlledMotorCount = 3;
+static const int16_t kMcpTensionTightAbsLoad = 80;
+static const int16_t kMcpTensionRelaxAbsLoad = 120;
+static const int16_t kMcpTensionOverloadAbsLoad = 300;
+static const int32_t kMcpTensionBiasStepCounts = 16;
+static const int32_t kMcpTensionBiasMaxCounts = 1600;
+static const int8_t kMcpTensionDirection[kMcpControlledMotorCount] = {
+    1, 1, 1
+};
 static const uint8_t kMcpAaJointIndex = 0;
 static const uint8_t kMcpFeJointIndex = 1;
 static const float kMcpFeMinDeg = -20.0f;
@@ -56,6 +64,13 @@ static int16_t clampMappedCountForProtocol(int32_t value)
     if (value > 32766) return 32766;
     if (value < -32768) return -32768;
     return (int16_t)value;
+}
+
+static int16_t absInt16ForLoad(int16_t value)
+{
+    if (value >= 0) return value;
+    if (value == (int16_t)-32768) return 32767;
+    return (int16_t)-value;
 }
 
 // 缁熶竴瀹夎鏂瑰悜鍚庯紝缂栫爜鍣ㄦ暟鍊煎綊涓€鍖栵紝鏄犲皠鍒癧0, kEncoderModulo)
@@ -224,6 +239,7 @@ void controlTask(void* parameter)
     resetAllReleaseGuardStates(releaseGuards);
 
     uint32_t lastReleaseFaultResetToken = sharedData->reverse_release_fault_reset_token;
+    uint32_t lastOverloadFaultResetToken = sharedData->overload_fault_reset_token;
     uint32_t lastServoInternalZeroAckToken = sharedData->servo_internal_zero_ack_token;
     uint8_t postServoZeroSettleCycles = 0;
     sharedData->reverse_release_fault_bitmap = 0;
@@ -246,6 +262,8 @@ void controlTask(void* parameter)
     uint32_t lastJointCommandToken      = commandSnapshot.jointCommandToken;
     uint32_t lastMotorDirectGeneration  = commandSnapshot.motorDirectCommandGeneration;
     uint8_t  lastMotorDirectSource      = commandSnapshot.motorDirectCommandSource;
+    int32_t mcpTensionBiasCounts[SERVO_TOTAL_NUM] = {0};
+    bool mcpLoadOverloadLatched = false;
     bool jointZeroHomingActive = false;
     uint8_t jointZeroHomingStableCount = 0;
     bool prevJointControlActive = false;
@@ -307,6 +325,13 @@ void controlTask(void* parameter)
             lastReleaseFaultResetToken = releaseFaultResetToken;
         }
 
+        const uint32_t overloadFaultResetToken = sharedData->overload_fault_reset_token;
+        if (overloadFaultResetToken != lastOverloadFaultResetToken) {
+            mcpLoadOverloadLatched = false;
+            sharedData->overload_fault_bitmap = 0;
+            lastOverloadFaultResetToken = overloadFaultResetToken;
+        }
+
         const uint32_t servoInternalZeroAckToken = sharedData->servo_internal_zero_ack_token;
         if (servoInternalZeroAckToken != lastServoInternalZeroAckToken) {
             lastServoInternalZeroAckToken = servoInternalZeroAckToken;
@@ -319,6 +344,8 @@ void controlTask(void* parameter)
             lastMotorSweepCommandToken = commandSnapshot.motorSweepCommandToken;
             lastMotorDirectGeneration = commandSnapshot.motorDirectCommandGeneration;
             lastMotorDirectSource = commandSnapshot.motorDirectCommandSource;
+            memset(mcpTensionBiasCounts, 0, sizeof(mcpTensionBiasCounts));
+            mcpLoadOverloadLatched = false;
             g_controlSolver.resetAll();
             postServoZeroSettleCycles = 10;
             vTaskDelayUntil(&lastWakeTime, solverPeriodTicks);
@@ -339,6 +366,14 @@ void controlTask(void* parameter)
         if (sharedData->servoFeedbackQueue)
             xQueuePeek(sharedData->servoFeedbackQueue, &servoData, 0);
 
+        ServoTelemetryData_t servoTelemetry;
+        memset(&servoTelemetry, 0, sizeof(servoTelemetry));
+        if (sharedData->servoTelemetrySnapshotQueue) {
+            xQueuePeek(sharedData->servoTelemetrySnapshotQueue, &servoTelemetry, 0);
+        } else if (sharedData->servoTelemetryQueue) {
+            xQueuePeek(sharedData->servoTelemetryQueue, &servoTelemetry, 0);
+        }
+
         if (postServoZeroSettleCycles > 0) {
             postServoZeroSettleCycles--;
             vTaskDelayUntil(&lastWakeTime, solverPeriodTicks);
@@ -358,9 +393,6 @@ void controlTask(void* parameter)
             }
             prevMotorOnline[ch] = onlineNow;
         }
-
-        // 鍗忚瀵归綈锛屽吋瀹癸細娓?鎵€鏈塷verload fault
-        sharedData->overload_fault_bitmap = 0;
 
         // 姝ラ3, 濉厖缁濆鑴夊啿缂撳啿鍖?ch鍒板叧鑺傛槧灏?
         memset(absolutePosition, 0, sizeof(absolutePosition));
@@ -522,6 +554,8 @@ void controlTask(void* parameter)
         if (!jointControlActive) {
             jointZeroHomingActive = false;
             jointZeroHomingStableCount = 0;
+            memset(mcpTensionBiasCounts, 0, sizeof(mcpTensionBiasCounts));
+            mcpLoadOverloadLatched = false;
         }
         prevJointControlActive = jointControlActive;
 
@@ -652,7 +686,7 @@ void controlTask(void* parameter)
                 // 鏄惁绱ф€ュ仠锛氬寮傚父鐘舵€?涓诲壇鏁呴殰/閲婃斁淇濇姢/瀹堟姢闇€hold
                 bool emergency = (!normalOutputAllowed) ||
                     shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex);
-                if (mappedValid) {
+                if (mappedValid && jointIndex > 1) {
                     const float trackError = localTargets[jointIndex] - magAngles[jointIndex];
                     if (trackError > kJointMaxTrackErrorDeg || trackError < -kJointMaxTrackErrorDeg) {
                         emergency = true;
@@ -707,22 +741,6 @@ void controlTask(void* parameter)
                     bool mcpHotplugHold = false;
                     bool mcpAllZeroReached = true;
                     bool mcpAnyOnline = false;
-
-                    for (uint8_t mcpJointIndex = 0; mcpJointIndex <= 1; mcpJointIndex++) {
-                        const bool mMappedValid = canBusOnline && (mappedData.validFlags[mcpJointIndex] != 0);
-                        if (!mMappedValid || isMcpJointEncoderOutOfRange(mcpJointIndex, magAngles[mcpJointIndex])) {
-                            mcpEmergency = true;
-                            const uint32_t nowMs = millis();
-                            if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
-                                lastJointControlDiagMs = nowMs;
-                                Serial.printf("[JOINT SAFETY] MCP encoder out of range J%02u actual=%.2f allowed=%.1f..%.1f hold motors\r\n",
-                                              (unsigned)mcpJointIndex,
-                                              (double)magAngles[mcpJointIndex],
-                                              (double)(mcpJointIndex == kMcpFeJointIndex ? kMcpFeMinDeg : kMcpAaMinDeg),
-                                              (double)(mcpJointIndex == kMcpFeJointIndex ? kMcpFeMaxDeg : kMcpAaMaxDeg));
-                            }
-                        }
-                    }
 
                     for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
                         const uint8_t mBus = jointMap[tendonIndex].busIndex;
@@ -826,6 +844,9 @@ void controlTask(void* parameter)
                     }
 
                     if (mcpAnyOnline) {
+                        bool mcpLoadOverload = mcpLoadOverloadLatched;
+                        uint8_t mcpLoadOverloadIndex = 0;
+                        int16_t mcpLoadOverloadValue = 0;
                         for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
                             const uint8_t mBus = jointMap[tendonIndex].busIndex;
                             const uint8_t mId = jointMap[tendonIndex].servoID;
@@ -834,35 +855,95 @@ void controlTask(void* parameter)
                             if (!mOnline) {
                                 continue;
                             }
-                            int32_t limitedTarget = outPulses[tendonIndex];
-                            const int32_t currentPos = absolutePosition[tendonIndex];
-                            const int32_t delta = limitedTarget - currentPos;
-                            if (delta > kMcpCommandMaxStepCounts) {
-                                limitedTarget = currentPos + kMcpCommandMaxStepCounts;
-                            } else if (delta < -kMcpCommandMaxStepCounts) {
-                                limitedTarget = currentPos - kMcpCommandMaxStepCounts;
+                            const int16_t loadAbs = absInt16ForLoad(servoTelemetry.load[mCh]);
+                            if (loadAbs > kMcpTensionOverloadAbsLoad) {
+                                mcpLoadOverload = true;
+                                mcpLoadOverloadLatched = true;
+                                mcpLoadOverloadIndex = tendonIndex;
+                                mcpLoadOverloadValue = loadAbs;
+                                if (mCh >= 0 && mCh < 32) {
+                                    sharedData->overload_fault_bitmap |= (1UL << mCh);
+                                }
+                                break;
                             }
-                            if (limitedTarget > kMcpJointModeMotorAbsGuardCounts) {
-                                limitedTarget = kMcpJointModeMotorAbsGuardCounts;
-                            } else if (limitedTarget < -kMcpJointModeMotorAbsGuardCounts) {
-                                limitedTarget = -kMcpJointModeMotorAbsGuardCounts;
+                        }
+                        if (mcpLoadOverload) {
+                            for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
+                                const uint8_t mBus = jointMap[tendonIndex].busIndex;
+                                const uint8_t mId = jointMap[tendonIndex].servoID;
+                                const int mCh = findMotorChannel(mBus, mId);
+                                const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
+                                if (!mOnline) {
+                                    continue;
+                                }
+                                const int16_t holdPos = clampServoPos(absolutePosition[tendonIndex]);
+                                appendServoTarget(&targetBatch, mBus, mId, holdPos,
+                                    kJointTargetSpeed, kJointTargetAcc);
+                                jointCmdPos[tendonIndex] = holdPos;
+                                jointCmdValid[tendonIndex] = 1;
                             }
-                            const int16_t targetPos = clampServoPos(limitedTarget);
-                            appendServoTarget(&targetBatch, mBus, mId, targetPos,
-                                kJointTargetSpeed, kJointTargetAcc);
-                            jointCmdPos[tendonIndex] = targetPos;
-                            jointCmdValid[tendonIndex] = 1;
+                            memset(mcpTensionBiasCounts, 0, sizeof(mcpTensionBiasCounts));
+                            const uint32_t nowMs = millis();
+                            if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
+                                lastJointControlDiagMs = nowMs;
+                                Serial.printf("[MCP LOAD SAFETY] abs(load) over limit M%02u loadAbs=%d limit=%d hold MCP motors\r\n",
+                                              (unsigned)mcpLoadOverloadIndex,
+                                              (int)mcpLoadOverloadValue,
+                                              (int)kMcpTensionOverloadAbsLoad);
+                            }
+                        } else {
+                            for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
+                                const uint8_t mBus = jointMap[tendonIndex].busIndex;
+                                const uint8_t mId = jointMap[tendonIndex].servoID;
+                                const int mCh = findMotorChannel(mBus, mId);
+                                const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
+                                if (!mOnline) {
+                                    continue;
+                                }
+                                const int16_t loadAbs = absInt16ForLoad(servoTelemetry.load[mCh]);
+                                if (loadAbs < kMcpTensionTightAbsLoad) {
+                                    if (mcpTensionBiasCounts[tendonIndex] < kMcpTensionBiasMaxCounts) {
+                                        mcpTensionBiasCounts[tendonIndex] += kMcpTensionBiasStepCounts;
+                                        if (mcpTensionBiasCounts[tendonIndex] > kMcpTensionBiasMaxCounts) {
+                                            mcpTensionBiasCounts[tendonIndex] = kMcpTensionBiasMaxCounts;
+                                        }
+                                    }
+                                } else if (loadAbs > kMcpTensionRelaxAbsLoad) {
+                                    if (mcpTensionBiasCounts[tendonIndex] > 0) {
+                                        mcpTensionBiasCounts[tendonIndex] -= kMcpTensionBiasStepCounts;
+                                        if (mcpTensionBiasCounts[tendonIndex] < 0) {
+                                            mcpTensionBiasCounts[tendonIndex] = 0;
+                                        }
+                                    }
+                                }
+                                int32_t limitedTarget = (int32_t)outPulses[tendonIndex] +
+                                    ((int32_t)kMcpTensionDirection[tendonIndex] * mcpTensionBiasCounts[tendonIndex]);
+                                const int32_t currentPos = absolutePosition[tendonIndex];
+                                const int32_t delta = limitedTarget - currentPos;
+                                if (delta > kMcpCommandMaxStepCounts) {
+                                    limitedTarget = currentPos + kMcpCommandMaxStepCounts;
+                                } else if (delta < -kMcpCommandMaxStepCounts) {
+                                    limitedTarget = currentPos - kMcpCommandMaxStepCounts;
+                                }
+                                if (limitedTarget > kMcpJointModeMotorAbsGuardCounts) {
+                                    limitedTarget = kMcpJointModeMotorAbsGuardCounts;
+                                } else if (limitedTarget < -kMcpJointModeMotorAbsGuardCounts) {
+                                    limitedTarget = -kMcpJointModeMotorAbsGuardCounts;
+                                }
+                                const int16_t targetPos = clampServoPos(limitedTarget);
+                                appendServoTarget(&targetBatch, mBus, mId, targetPos,
+                                    kJointTargetSpeed, kJointTargetAcc);
+                                jointCmdPos[tendonIndex] = targetPos;
+                                jointCmdValid[tendonIndex] = 1;
+                            }
                         }
                         const uint32_t nowMs = millis();
                         if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
                             lastJointControlDiagMs = nowMs;
                             Serial.printf("[MCP CTRL] J00 target=%.2f actual=%.2f J01 target=%.2f actual=%.2f "
-                                          "M00/R targetLen=%.3f actualLen=%.3f mappedMotor=%.1f solver=%ld cmd=%d "
-                                          "M01/L targetLen=%.3f actualLen=%.3f mappedMotor=%.1f solver=%ld cmd=%d "
-                                          "M02/C targetLen=%.3f actualLen=%.3f mappedMotor=%.1f solver=%ld cmd=%d "
-                                          "[SERVO TARGET] M00 bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld "
-                                          "M01 bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld "
-                                          "M02 bus=%u id=%u motorTarget=%d swZero=%ld hardwareTarget=%ld motorAbsNow=%ld hardwareAbsNow=%ld\r\n",
+                                          "M00/R len=%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d "
+                                          "cur=%d bias=%ld M01/L len=%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d "
+                                          "cur=%d bias=%ld M02/C len=%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d cur=%d bias=%ld\r\n",
                                           (double)localTargets[0],
                                           (double)magAngles[0],
                                           (double)localTargets[1],
@@ -872,37 +953,28 @@ void controlTask(void* parameter)
                                           (double)g_controlSolver.getMappedMotorTarget(0),
                                           (long)outPulses[0],
                                           (int)jointCmdPos[0],
+                                          (long)servoData.servoAngles[0],
+                                          (int)servoTelemetry.load[0],
+                                          (int)servoTelemetry.current[0],
+                                          (long)mcpTensionBiasCounts[0],
                                           (double)g_controlSolver.getTargetTendonLength(1),
                                           (double)g_controlSolver.getActualTendonLength(1),
                                           (double)g_controlSolver.getMappedMotorTarget(1),
                                           (long)outPulses[1],
                                           (int)jointCmdPos[1],
+                                          (long)servoData.servoAngles[1],
+                                          (int)servoTelemetry.load[1],
+                                          (int)servoTelemetry.current[1],
+                                          (long)mcpTensionBiasCounts[1],
                                           (double)g_controlSolver.getTargetTendonLength(2),
                                           (double)g_controlSolver.getActualTendonLength(2),
                                           (double)g_controlSolver.getMappedMotorTarget(2),
                                           (long)outPulses[2],
                                           (int)jointCmdPos[2],
-                                          (unsigned)jointMap[0].busIndex,
-                                          (unsigned)jointMap[0].servoID,
-                                          (int)jointCmdPos[0],
-                                          (long)servoData.softwareZeroOffsets[0],
-                                          (long)((int32_t)jointCmdPos[0] + servoData.softwareZeroOffsets[0]),
-                                          (long)servoData.servoAngles[0],
-                                          (long)(servoData.servoAngles[0] + servoData.softwareZeroOffsets[0]),
-                                          (unsigned)jointMap[1].busIndex,
-                                          (unsigned)jointMap[1].servoID,
-                                          (int)jointCmdPos[1],
-                                          (long)servoData.softwareZeroOffsets[1],
-                                          (long)((int32_t)jointCmdPos[1] + servoData.softwareZeroOffsets[1]),
-                                          (long)servoData.servoAngles[1],
-                                          (long)(servoData.servoAngles[1] + servoData.softwareZeroOffsets[1]),
-                                          (unsigned)jointMap[2].busIndex,
-                                          (unsigned)jointMap[2].servoID,
-                                          (int)jointCmdPos[2],
-                                          (long)servoData.softwareZeroOffsets[2],
-                                          (long)((int32_t)jointCmdPos[2] + servoData.softwareZeroOffsets[2]),
                                           (long)servoData.servoAngles[2],
-                                          (long)(servoData.servoAngles[2] + servoData.softwareZeroOffsets[2]));
+                                          (int)servoTelemetry.load[2],
+                                          (int)servoTelemetry.current[2],
+                                          (long)mcpTensionBiasCounts[2]);
                         }
                     }
                     continue;

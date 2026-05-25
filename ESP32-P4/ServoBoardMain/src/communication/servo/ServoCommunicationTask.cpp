@@ -22,6 +22,7 @@ struct ServoFeedbackInternal {
     int16_t rawPosition;
     int16_t speed;
     int16_t load;
+    int16_t current;
     uint8_t voltage;
     uint8_t temperature;
     int32_t hardwareAbsolutePosition;
@@ -170,7 +171,7 @@ public:
         }
 
         const uint8_t addrPresentPosition = 56;
-        const uint8_t feedbackLen = 8;
+        const uint8_t feedbackLen = SMS_STS_PRESENT_CURRENT_H - SMS_STS_PRESENT_POSITION_L + 1;
         const uint16_t timeoutMs = (_syncReadTimeoutMs == 0) ? 1 : _syncReadTimeoutMs;
         int successCount = 0;
 
@@ -200,6 +201,7 @@ public:
                 _feedback[id].load = decodeSignedWithSignBit(rxBuf[4], rxBuf[5], 10);
                 _feedback[id].voltage = rxBuf[6];
                 _feedback[id].temperature = rxBuf[7];
+                _feedback[id].current = decodeSignedWithSignBit(rxBuf[13], rxBuf[14], 15);
                 _feedback[id].online = true;
                 _feedback[id].lastUpdate = millis();
                 successCount++;
@@ -647,8 +649,9 @@ static void publishServoFeedback(TaskSharedData_t* sharedData)
                 servoRawData.servoRawPositions[ch] = bus->getRawPosition(id);
                 servoData.onlineStatus[ch] = 1;
                 servoRawData.onlineStatus[ch] = 1;
-                telemetryData.speed[ch] = fb.speed;
+            telemetryData.speed[ch] = fb.speed;
             telemetryData.load[ch] = fb.load;
+            telemetryData.current[ch] = fb.current;
             telemetryData.voltage[ch] = fb.voltage;
             telemetryData.temperature[ch] = fb.temperature;
             telemetryData.onlineStatus[ch] = 1;

@@ -1,0 +1,21 @@
+{
+  "baud": 921600,
+  "period_s": 0.02,
+  "idle_samples": 20,
+  "i_low_counts": 20,
+  "i_high_counts": 45,
+  "tighten_step": 1,
+  "release_step": 8,
+  "bias_max_each": 8192,
+  "bias_total_max": 8192,
+  "max_target_step": 120,
+  "motor_abs_guard": 20000,
+  "motors": [
+    {
+      "channel": 2,
+      "name": "M02/probe",
+      "tighten_dir": 1
+    }
+  ],
+  "joints": []
+}
