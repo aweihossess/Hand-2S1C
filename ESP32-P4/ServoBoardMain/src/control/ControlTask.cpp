@@ -35,17 +35,20 @@ static const int32_t kMcpJointModeMotorAbsGuardCounts = 6400;
 static const uint32_t kJointControlDiagIntervalMs = 1000;
 static const uint32_t kJointDebugIntervalMs = 50;
 static const bool kEnableReleaseGuard = false;
-static const uint8_t kMcpControlledMotorCount = 3;
+static const uint8_t kMcpControlledMotorCount = 5;
 static const int16_t kMcpTensionTightAbsLoad = 80;
 static const int16_t kMcpTensionRelaxAbsLoad = 120;
 static const int16_t kMcpTensionOverloadAbsLoad = 300;
 static const int32_t kMcpTensionBiasStepCounts = 16;
 static const int32_t kMcpTensionBiasMaxCounts = 1600;
 static const int8_t kMcpTensionDirection[kMcpControlledMotorCount] = {
-    1, 1, 1
+    1, 1, 1, 1, 1
 };
 static const uint8_t kMcpAaJointIndex = 0;
 static const uint8_t kMcpFeJointIndex = 1;
+static const uint8_t kPipFeJointIndex = 2;
+static const uint8_t kDipFeJointIndex = 3;
+static const uint8_t kMcpReturnMotorJointMapIndex = 4;
 static const float kMcpFeMinDeg = -20.0f;
 static const float kMcpFeMaxDeg = 80.0f;
 static const float kMcpAaMinDeg = -20.0f;
@@ -732,7 +735,10 @@ void controlTask(void* parameter)
 
                 if (bus >= NUM_BUSES) continue;
                 if (!controlEnabled) continue;
-                if (jointIndex == 1 || jointIndex == 2) {
+                if (jointIndex == kMcpFeJointIndex ||
+                    jointIndex == kPipFeJointIndex ||
+                    jointIndex == kDipFeJointIndex ||
+                    jointIndex == kMcpReturnMotorJointMapIndex) {
                     continue;
                 }
                 if (jointIndex == 0)
@@ -743,8 +749,8 @@ void controlTask(void* parameter)
                     bool mcpAnyOnline = false;
 
                     for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
-                        const uint8_t mBus = jointMap[tendonIndex].busIndex;
-                        const uint8_t mId = jointMap[tendonIndex].servoID;
+                        const uint8_t mBus = motorMap[tendonIndex].busIndex;
+                        const uint8_t mId = motorMap[tendonIndex].servoID;
                         const int mCh = findMotorChannel(mBus, mId);
                         const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
                         mcpAnyOnline = mcpAnyOnline || mOnline;
@@ -784,12 +790,12 @@ void controlTask(void* parameter)
                     if (mcpEmergency)
                     {
                         for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
-                            const uint8_t mBus = jointMap[tendonIndex].busIndex;
-                            const uint8_t mId = jointMap[tendonIndex].servoID;
+                            const uint8_t mBus = motorMap[tendonIndex].busIndex;
+                            const uint8_t mId = motorMap[tendonIndex].servoID;
                             const int mCh = findMotorChannel(mBus, mId);
                             const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
                             if (mOnline) {
-                                const int16_t holdPos = clampServoPos(absolutePosition[tendonIndex]);
+                                const int16_t holdPos = clampServoPos(servoData.servoAngles[mCh]);
                                 appendServoTarget(&targetBatch, mBus, mId, holdPos,
                                     kJointTargetSpeed, kJointTargetAcc);
                                 jointCmdPos[tendonIndex] = holdPos;
@@ -802,8 +808,8 @@ void controlTask(void* parameter)
                     if (jointZeroHomingActive)
                     {
                         for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
-                            const uint8_t mBus = jointMap[tendonIndex].busIndex;
-                            const uint8_t mId = jointMap[tendonIndex].servoID;
+                            const uint8_t mBus = motorMap[tendonIndex].busIndex;
+                            const uint8_t mId = motorMap[tendonIndex].servoID;
                             const int mCh = findMotorChannel(mBus, mId);
                             const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
                             if (mOnline) {
@@ -811,9 +817,10 @@ void controlTask(void* parameter)
                                     kJointTargetSpeed, kJointTargetAcc);
                                 jointCmdPos[tendonIndex] = 0;
                                 jointCmdValid[tendonIndex] = 1;
-                                const int32_t zeroError = (absolutePosition[tendonIndex] >= 0)
-                                    ? absolutePosition[tendonIndex]
-                                    : -absolutePosition[tendonIndex];
+                                const int32_t motorAbsNow = servoData.servoAngles[mCh];
+                                const int32_t zeroError = (motorAbsNow >= 0)
+                                    ? motorAbsNow
+                                    : -motorAbsNow;
                                 if (zeroError > kJointZeroHomingToleranceCounts) {
                                     mcpAllZeroReached = false;
                                 }
@@ -828,12 +835,12 @@ void controlTask(void* parameter)
                     if (mcpHotplugHold)
                     {
                         for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
-                            const uint8_t mBus = jointMap[tendonIndex].busIndex;
-                            const uint8_t mId = jointMap[tendonIndex].servoID;
+                            const uint8_t mBus = motorMap[tendonIndex].busIndex;
+                            const uint8_t mId = motorMap[tendonIndex].servoID;
                             const int mCh = findMotorChannel(mBus, mId);
                             const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
                             if (mOnline) {
-                                const int16_t holdPos = clampServoPos(absolutePosition[tendonIndex]);
+                                const int16_t holdPos = clampServoPos(servoData.servoAngles[mCh]);
                                 appendServoTarget(&targetBatch, mBus, mId, holdPos,
                                     kJointTargetSpeed, kJointTargetAcc);
                                 jointCmdPos[tendonIndex] = holdPos;
@@ -848,8 +855,8 @@ void controlTask(void* parameter)
                         uint8_t mcpLoadOverloadIndex = 0;
                         int16_t mcpLoadOverloadValue = 0;
                         for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
-                            const uint8_t mBus = jointMap[tendonIndex].busIndex;
-                            const uint8_t mId = jointMap[tendonIndex].servoID;
+                            const uint8_t mBus = motorMap[tendonIndex].busIndex;
+                            const uint8_t mId = motorMap[tendonIndex].servoID;
                             const int mCh = findMotorChannel(mBus, mId);
                             const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
                             if (!mOnline) {
@@ -869,14 +876,14 @@ void controlTask(void* parameter)
                         }
                         if (mcpLoadOverload) {
                             for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
-                                const uint8_t mBus = jointMap[tendonIndex].busIndex;
-                                const uint8_t mId = jointMap[tendonIndex].servoID;
+                                const uint8_t mBus = motorMap[tendonIndex].busIndex;
+                                const uint8_t mId = motorMap[tendonIndex].servoID;
                                 const int mCh = findMotorChannel(mBus, mId);
                                 const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
                                 if (!mOnline) {
                                     continue;
                                 }
-                                const int16_t holdPos = clampServoPos(absolutePosition[tendonIndex]);
+                                const int16_t holdPos = clampServoPos(servoData.servoAngles[mCh]);
                                 appendServoTarget(&targetBatch, mBus, mId, holdPos,
                                     kJointTargetSpeed, kJointTargetAcc);
                                 jointCmdPos[tendonIndex] = holdPos;
@@ -893,8 +900,8 @@ void controlTask(void* parameter)
                             }
                         } else {
                             for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
-                                const uint8_t mBus = jointMap[tendonIndex].busIndex;
-                                const uint8_t mId = jointMap[tendonIndex].servoID;
+                                const uint8_t mBus = motorMap[tendonIndex].busIndex;
+                                const uint8_t mId = motorMap[tendonIndex].servoID;
                                 const int mCh = findMotorChannel(mBus, mId);
                                 const bool mOnline = (mCh >= 0) && (servoData.onlineStatus[mCh] != 0);
                                 if (!mOnline) {
@@ -918,7 +925,7 @@ void controlTask(void* parameter)
                                 }
                                 int32_t limitedTarget = (int32_t)outPulses[tendonIndex] +
                                     ((int32_t)kMcpTensionDirection[tendonIndex] * mcpTensionBiasCounts[tendonIndex]);
-                                const int32_t currentPos = absolutePosition[tendonIndex];
+                                const int32_t currentPos = servoData.servoAngles[mCh];
                                 const int32_t delta = limitedTarget - currentPos;
                                 if (delta > kMcpCommandMaxStepCounts) {
                                     limitedTarget = currentPos + kMcpCommandMaxStepCounts;
@@ -940,16 +947,29 @@ void controlTask(void* parameter)
                         const uint32_t nowMs = millis();
                         if (nowMs - lastJointControlDiagMs >= kJointControlDiagIntervalMs) {
                             lastJointControlDiagMs = nowMs;
-                            Serial.printf("[MCP CTRL] J00 target=%.2f actual=%.2f J01 target=%.2f actual=%.2f "
-                                          "M00/R len=%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d "
-                                          "cur=%d bias=%ld M01/L len=%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d "
-                                          "cur=%d bias=%ld M02/C len=%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d cur=%d bias=%ld\r\n",
+                            Serial.printf("[MCP5 CTRL] J00 target=%.2f actual=%.2f J01 target=%.2f actual=%.2f "
+                                          "J02 target=%.2f actual=%.2f J03 target=%.2f actual=%.2f "
+                                          "entry=%.2f/%.2f/%.2f/%.2f "
+                                          "M00 len=%.3f/%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d cur=%d bias=%ld "
+                                          "M01 len=%.3f/%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d cur=%d bias=%ld "
+                                          "M02 len=%.3f/%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d cur=%d bias=%ld "
+                                          "M03 len=%.3f/%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d cur=%d bias=%ld "
+                                          "M04 len=%.3f/%.3f/%.3f map=%.1f solver=%ld cmd=%d now=%ld load=%d cur=%d bias=%ld\r\n",
                                           (double)localTargets[0],
                                           (double)magAngles[0],
                                           (double)localTargets[1],
                                           (double)magAngles[1],
+                                          (double)localTargets[2],
+                                          (double)magAngles[2],
+                                          (double)localTargets[3],
+                                          (double)magAngles[3],
+                                          (double)g_controlSolver.getEntryJointDeg(0),
+                                          (double)g_controlSolver.getEntryJointDeg(1),
+                                          (double)g_controlSolver.getEntryJointDeg(2),
+                                          (double)g_controlSolver.getEntryJointDeg(3),
                                           (double)g_controlSolver.getTargetTendonLength(0),
                                           (double)g_controlSolver.getActualTendonLength(0),
+                                          (double)g_controlSolver.getTendonFirstLength(0),
                                           (double)g_controlSolver.getMappedMotorTarget(0),
                                           (long)outPulses[0],
                                           (int)jointCmdPos[0],
@@ -959,6 +979,7 @@ void controlTask(void* parameter)
                                           (long)mcpTensionBiasCounts[0],
                                           (double)g_controlSolver.getTargetTendonLength(1),
                                           (double)g_controlSolver.getActualTendonLength(1),
+                                          (double)g_controlSolver.getTendonFirstLength(1),
                                           (double)g_controlSolver.getMappedMotorTarget(1),
                                           (long)outPulses[1],
                                           (int)jointCmdPos[1],
@@ -968,13 +989,34 @@ void controlTask(void* parameter)
                                           (long)mcpTensionBiasCounts[1],
                                           (double)g_controlSolver.getTargetTendonLength(2),
                                           (double)g_controlSolver.getActualTendonLength(2),
+                                          (double)g_controlSolver.getTendonFirstLength(2),
                                           (double)g_controlSolver.getMappedMotorTarget(2),
                                           (long)outPulses[2],
                                           (int)jointCmdPos[2],
                                           (long)servoData.servoAngles[2],
                                           (int)servoTelemetry.load[2],
                                           (int)servoTelemetry.current[2],
-                                          (long)mcpTensionBiasCounts[2]);
+                                          (long)mcpTensionBiasCounts[2],
+                                          (double)g_controlSolver.getTargetTendonLength(3),
+                                          (double)g_controlSolver.getActualTendonLength(3),
+                                          (double)g_controlSolver.getTendonFirstLength(3),
+                                          (double)g_controlSolver.getMappedMotorTarget(3),
+                                          (long)outPulses[3],
+                                          (int)jointCmdPos[3],
+                                          (long)servoData.servoAngles[3],
+                                          (int)servoTelemetry.load[3],
+                                          (int)servoTelemetry.current[3],
+                                          (long)mcpTensionBiasCounts[3],
+                                          (double)g_controlSolver.getTargetTendonLength(4),
+                                          (double)g_controlSolver.getActualTendonLength(4),
+                                          (double)g_controlSolver.getTendonFirstLength(4),
+                                          (double)g_controlSolver.getMappedMotorTarget(4),
+                                          (long)outPulses[4],
+                                          (int)jointCmdPos[4],
+                                          (long)servoData.servoAngles[4],
+                                          (int)servoTelemetry.load[4],
+                                          (int)servoTelemetry.current[4],
+                                          (long)mcpTensionBiasCounts[4]);
                         }
                     }
                     continue;

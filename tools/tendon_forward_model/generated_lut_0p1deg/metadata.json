@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "description": "0.1-degree decomposed tendon feedforward LUT generated from offline geometry model.",
+  "theta1_min_deg": -20.0,
+  "theta1_max_deg": 30.0,
+  "theta2_min_deg": 0.0,
+  "theta2_max_deg": 90.0,
+  "step_deg": 0.1,
+  "theta1_count": 501,
+  "theta2_count": 901,
+  "obstacle_padding_mm": 0.0,
+  "mcp_wrap_mode": "direct-if-clear-ccw",
+  "quantization_scale_mm": 1000.0,
+  "invalid_policy": "straight",
+  "table_units": "float32 mm in .npz",
+  "int16_units": "round(mm * quantization_scale_mm)",
+  "motor_conversion": "motor_abs_delta_counts = -length_delta_mm * counts_per_mm",
+  "m00_invalid_count": 56849,
+  "m01_invalid_count": 5796,
+  "pip_m02_slope_mm_per_rad": -6.0,
+  "pip_m03_slope_mm_per_rad": -4.75,
+  "dip_m03_slope_mm_per_rad": -5.0,
+  "pip_m04_slope_mm_per_rad": 9.9,
+  "dip_m04_slope_mm_per_rad": 6.45,
+  "diagnostics": {
+    "m02_zero_len": 30.498689777540033,
+    "m04_theta2_zero_len": 25.86587153706299
+  }
+}

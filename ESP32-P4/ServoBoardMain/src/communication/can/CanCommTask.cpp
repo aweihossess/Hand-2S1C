@@ -5,6 +5,31 @@
 
 #include <string.h>
 
+namespace {
+constexpr uint8_t kEncoderChannelIdentity = 0xFF;
+
+static const uint8_t kLogicalToPhysicalEncoderChannel[ENCODER_TOTAL_NUM] = {
+    12, 13, 14, 15,
+    kEncoderChannelIdentity, kEncoderChannelIdentity, kEncoderChannelIdentity, kEncoderChannelIdentity,
+    kEncoderChannelIdentity, kEncoderChannelIdentity, kEncoderChannelIdentity, kEncoderChannelIdentity,
+    kEncoderChannelIdentity, kEncoderChannelIdentity, kEncoderChannelIdentity, kEncoderChannelIdentity,
+    kEncoderChannelIdentity, kEncoderChannelIdentity, kEncoderChannelIdentity, kEncoderChannelIdentity,
+    kEncoderChannelIdentity
+};
+
+static int logicalEncoderIndexForPhysical(uint8_t physicalIndex) {
+    for (uint8_t logicalIndex = 0; logicalIndex < ENCODER_TOTAL_NUM; logicalIndex++) {
+        const uint8_t mappedPhysical = kLogicalToPhysicalEncoderChannel[logicalIndex];
+        const uint8_t effectivePhysical =
+            (mappedPhysical == kEncoderChannelIdentity) ? logicalIndex : mappedPhysical;
+        if (effectivePhysical == physicalIndex) {
+            return logicalIndex;
+        }
+    }
+    return -1;
+}
+} // namespace
+
 static_assert(
     CAN_ERROR_DETAIL_FRAME_COUNT == (CAN_ID_ERROR_DETAIL_LAST - CAN_ID_ERROR_DETAIL_BASE + 1),
     "Error-detail ID range must match frame count.");
@@ -121,6 +146,26 @@ static uint32_t buildErrorBitmap(const uint8_t* codes) {
     return bitmap;
 }
 
+static void clearRemappedPhysicalEncoderSources(RemoteSensorData_t* data) {
+    if (!data) {
+        return;
+    }
+
+    for (uint8_t logicalIndex = 0; logicalIndex < ENCODER_TOTAL_NUM; logicalIndex++) {
+        const uint8_t mappedPhysical = kLogicalToPhysicalEncoderChannel[logicalIndex];
+        if (mappedPhysical == kEncoderChannelIdentity || mappedPhysical == logicalIndex) {
+            continue;
+        }
+        if (mappedPhysical >= ENCODER_TOTAL_NUM) {
+            continue;
+        }
+
+        data->encoderValues[mappedPhysical] = 0xFFFF;
+        data->errorFlags[mappedPhysical] = 0x01;
+    }
+    data->errorBitmap = buildErrorBitmap(data->errorFlags);
+}
+
 static void setupTwai() {
     // TWAI 驱动只安装一次；重复调用可安全返回。
     static bool installed = false;
@@ -188,10 +233,14 @@ void canCommunicationTask(void* parameter) {
                     }
                     const uint16_t val = ((uint16_t)rxMsg.data[dataOffset] << 8) |
                                          rxMsg.data[dataOffset + 1];
-                    rxBuffer.encoderValues[realIdx] = val;
+                    const int logicalIdx = logicalEncoderIndexForPhysical((uint8_t)realIdx);
+                    if (logicalIdx >= 0) {
+                        rxBuffer.encoderValues[logicalIdx] = val;
+                    }
                 }
 
                 if (rxMsg.identifier == CAN_ID_ENC_LAST) {
+                    clearRemappedPhysicalEncoderSources(&rxBuffer);
                     rxBuffer.timestamp = nowMs;
                     rxBuffer.isValid = true;
                     xQueueOverwrite(sharedData->canRxQueue, &rxBuffer);
@@ -227,13 +276,17 @@ void canCommunicationTask(void* parameter) {
                 for (int i = 0; i < CAN_ERROR_DETAIL_CODES_PER_FRAME; i++) {
                     const int channelIdx = baseIdx + i;
                     if (channelIdx < ENCODER_TOTAL_NUM) {
-                        errorState.codes[channelIdx] = rxMsg.data[1 + i];
+                        const int logicalIdx = logicalEncoderIndexForPhysical((uint8_t)channelIdx);
+                        if (logicalIdx >= 0) {
+                            errorState.codes[logicalIdx] = rxMsg.data[1 + i];
+                        }
                     }
                 }
 
                 errorState.frameMask |= (uint8_t)(1U << frameIdx);
                 if (errorState.frameMask == kAllErrorFramesMask) {
                     memcpy(rxBuffer.errorFlags, errorState.codes, sizeof(rxBuffer.errorFlags));
+                    clearRemappedPhysicalEncoderSources(&rxBuffer);
                     rxBuffer.errorBitmap = buildErrorBitmap(rxBuffer.errorFlags);
                     lastCompleteErrorBatchTime = nowMs;
                     resetErrorDetailReassembly(&errorState);

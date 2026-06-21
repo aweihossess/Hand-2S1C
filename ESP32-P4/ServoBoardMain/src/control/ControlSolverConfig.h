@@ -3,15 +3,18 @@
 
 #include "../shared/TaskSharedData.h"
 
-// MCP tendon model config.
-// Physical motor placement is swapped:
-// index 0 maps to M00/model R tendon, index 1 maps to M01/model L tendon.
-// index 2 maps to M02/model C assist tendon.
+// Five-tendon finger feedforward config.
+// Tendon indices:
+//   0=M00/ID1 MCP-AA right swing + MCP-FE flexion
+//   1=M01/ID2 MCP-AA left swing  + MCP-FE flexion
+//   2=M02/ID3 PIP-FE flexion
+//   3=M03/ID4 DIP/distal-FE flexion
+//   4=M04/ID5 common return tendon
 // Motor Abs is the servo position relative to SW Zero Ofs, so 0 means the
 // mechanical zero captured by Set Servo Zero.
 
 static const float kTendonLengthToPulse[JOINT_COUNT] = {
-    -160.0f, -160.0f, -160.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -160.0f, -160.0f, -160.0f, -160.0f, -160.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
 };
@@ -40,37 +43,46 @@ static const float kMcpGeometryZ3Mm = 0.0f;
 static const float kMcpGeometryL4Mm = 9.27f;
 static const float kMcpTheta4Deg = 29.0546f;
 
-// Angle feedback correction for the MCP actuator set.
-// Rows are motors/tendons: 0=M00/model R, 1=M01/model L, 2=M02/model C assist.
-// Columns are joints: 0=J00/MCP-AA, 1=J01/MCP-FE.
+// Angle feedback correction for the five-tendon actuator set.
+// Rows are motors/tendons M00..M04.
+// Columns are joints: 0=J00/MCP-AA, 1=J01/MCP-FE, 2=J02/PIP-FE, 3=J03/DIP-FE.
+// Keep these gains conservative while the new five-tendon length model is
+// being validated. The LUT feedforward supplies the nominal motor target, and
+// this matrix adds a small encoder-error correction in motor counts.
 // Units:
 //   P: motor counts / deg
 //   I: motor counts / (deg*s)
 //   D: motor counts / (deg/s)
-static const float kMcpAngleKp[3][2] = {
-    {-20.0f, -30.0f},
-    { 20.0f, -30.0f},
-    {  0.0f, 30.0f}
+static const float kMcpAngleKp[5][4] = {
+    { 6.0f,  4.0f, 0.0f, 0.0f},
+    {-6.0f,  4.0f, 0.0f, 0.0f},
+    { 2.0f,  3.0f, 5.0f, 0.0f},
+    { 2.0f, -3.0f, 3.0f, 4.0f},
+    {-3.0f, -3.0f, 6.0f, 5.0f}
 };
 
-static const float kMcpAngleKi[3][2] = {
-    {-8.0f, -28.0f},
-    { 8.0f, -28.0f},
-    { 0.0f, 28.0f}
+static const float kMcpAngleKi[5][4] = {
+    {0.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 0.0f}
 };
 
-static const float kMcpAngleKd[3][2] = {
-    {-1.0f, -1.0f},
-    { 1.0f, -1.0f},
-    { 0.0f,  1.0f}
+static const float kMcpAngleKd[5][4] = {
+    {0.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 0.0f}
 };
 
-static const float kMcpAngleIntegralLimitDegSec[2] = {
-    30.0f, 60.0f
+static const float kMcpAngleIntegralLimitDegSec[4] = {
+    30.0f, 60.0f, 60.0f, 60.0f
 };
 
-static const float kMcpAngleFeedbackLimitCounts[3] = {
-    2400.0f, 2400.0f, 2400.0f
+static const float kMcpAngleFeedbackLimitCounts[5] = {
+    2400.0f, 2400.0f, 2400.0f, 2400.0f, 2400.0f
 };
 
 // Motor position loop. Output is a per-cycle Motor Abs step.

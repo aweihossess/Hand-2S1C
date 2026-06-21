@@ -27,10 +27,10 @@ JointCalibrationResult g_jointCalibResult[ENCODER_TOTAL_NUM];
 // g_encoderDirection：编码器安装方向表，+1正向、-1反向。所有原始角度需先经此变换，确保正负方向统一。
 int8_t g_encoderDirection[ENCODER_TOTAL_NUM] = {
     -1, -1, -1, 1,
-    1, -1, -1, 1,
-    1, -1, -1, 1,
-    1, -1, -1, -1,
-    1,  1, -1, -1, 1
+    -1, -1, -1, 1,
+    -1, -1, -1, 1,
+    -1, -1, -1, 1,
+    -1, -1, -1, 1, 1
 };
 
 // 手动回退编码器Offset表。自动标定失败或不可用时，控制任务用作零位偏移。
@@ -53,9 +53,9 @@ int32_t g_motorZeroAbsManual[SERVO_TOTAL_NUM] = {
 // 这是给现场调试预留的固定参数位：将每个关节在“机械零位”时的 raw 填到这里。
 // -1 表示该关节未配置，默认回退为 0。
 static const int32_t kManualZeroRaw[ENCODER_TOTAL_NUM] = {
-    12875, 5819, 2108, 11831,
+    13353, 7033, 12236, 14696,
     -1, -1, -1, -1,
-    -1, -1, -1, -1,
+    13208, 6513, 12608, 15543,
     -1, -1, -1, -1,
     -1, -1, -1, -1, -1
 };

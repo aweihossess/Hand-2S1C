@@ -36,6 +36,8 @@ public:
     float getPidOutput(uint8_t jointIndex, uint8_t loopIndex) const;
     float getTargetTendonLength(uint8_t jointIndex) const;
     float getActualTendonLength(uint8_t jointIndex) const;
+    float getTendonFirstLength(uint8_t jointIndex) const;
+    float getEntryJointDeg(uint8_t jointIndex) const;
     float getMappedMotorTarget(uint8_t jointIndex) const;
     // 清空 PID 状态，后续状态机需要在模式切换时重置积分项可调用此接口。
     void resetAll();
@@ -48,7 +50,6 @@ private:
     float computeMcpLTendonLength(float theta1Deg, float theta2Deg) const;
     float computeMcpRTendonLength(float theta1Deg, float theta2Deg) const;
     float computeMcpCTendonLength(float theta1Deg, float theta2Deg) const;
-    float getTendonModelZeroLength(uint8_t tendonIndex) const;
     int16_t computeTendonCascadeOutput(uint8_t tendonIndex, int32_t actualMotorAbs);
     bool computeDualLoopPid(float* targetDegs,
                             float* magActualDegs,
@@ -64,7 +65,7 @@ private:
     float _tendonKd[JOINT_COUNT];
     float _targetTendonLength[JOINT_COUNT];
     float _actualTendonLength[JOINT_COUNT];
-    float _tendonZeroLength[JOINT_COUNT];
+    float _tendonFirstLength[JOINT_COUNT];
     float _tendonLengthToPulse[JOINT_COUNT];
     float _tendonPrevMotorError[JOINT_COUNT];
     float _jointErrorIntegral[JOINT_COUNT];
@@ -73,6 +74,7 @@ private:
     float _tendonMotorKd[JOINT_COUNT];
     float _tendonMotorOutputLimit[JOINT_COUNT];
     float _mappedMotorTarget[JOINT_COUNT];
+    float _qEntry[JOINT_COUNT];
     float _qRef[JOINT_COUNT];
     float _qRefMaxStepDeg[JOINT_COUNT];
     float _qFbLpfStage1[JOINT_COUNT];
@@ -83,6 +85,7 @@ private:
     bool _qRefInitialized[JOINT_COUNT];
     bool _qFbInitialized[JOINT_COUNT];
     bool _tendonControllerInitialized[JOINT_COUNT];
+    bool _entryPoseInitialized;
     PID_Info_TypeDef _pids[JOINT_COUNT][2];
     bool _initialized;
 };
