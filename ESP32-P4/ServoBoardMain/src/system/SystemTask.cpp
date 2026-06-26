@@ -98,6 +98,8 @@ void System_Init() {
     for (int i = 0; i < ENCODER_TOTAL_NUM; i++) {
         sharedData.tendon_guard_sign[i] = 1;
     }
+    sharedData.mcp_tendon_feedforward_enabled = 1;
+    sharedData.mcp_tension_bias_enabled = 1;
     sharedData.calib_zero_raw_valid = 0;
 
 

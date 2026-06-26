@@ -39,6 +39,8 @@ public:
     float getTendonFirstLength(uint8_t jointIndex) const;
     float getEntryJointDeg(uint8_t jointIndex) const;
     float getMappedMotorTarget(uint8_t jointIndex) const;
+    void setTendonLengthFeedforwardEnabled(bool enabled);
+    bool isTendonLengthFeedforwardEnabled() const;
     // 清空 PID 状态，后续状态机需要在模式切换时重置积分项可调用此接口。
     void resetAll();
 
@@ -86,6 +88,7 @@ private:
     bool _qFbInitialized[JOINT_COUNT];
     bool _tendonControllerInitialized[JOINT_COUNT];
     bool _entryPoseInitialized;
+    bool _tendonLengthFeedforwardEnabled;
     PID_Info_TypeDef _pids[JOINT_COUNT][2];
     bool _initialized;
 };

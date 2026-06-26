@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3D Distance Visualizer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --ink: #1e2329;
+      --muted: #68707d;
+      --line: #d9dee7;
+      --blue: #2563eb;
+      --green: #0f9f6e;
+      --red: #dc3d43;
+      --amber: #b7791f;
+      --shadow: 0 10px 30px rgba(30, 35, 41, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(360px, 440px) minmax(0, 1fr);
+    }
+
+    .sidebar {
+      background: var(--panel);
+      border-right: 1px solid var(--line);
+      padding: 18px;
+      overflow-y: auto;
+    }
+
+    .main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto minmax(360px, 1fr) auto;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px;
+      background: rgba(247, 248, 251, 0.92);
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .subtitle {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    button, label.file-button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      height: 34px;
+      padding: 0 12px;
+      border-radius: 6px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    button:hover, label.file-button:hover {
+      border-color: #aab3c2;
+      background: #fafbfe;
+    }
+
+    button.primary {
+      border-color: var(--blue);
+      background: var(--blue);
+      color: #fff;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+
+    .section {
+      margin-bottom: 18px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 0 0 10px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #374151;
+    }
+
+    .coord {
+      display: grid;
+      grid-template-columns: 42px repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .coord .name {
+      font-weight: 700;
+      font-size: 13px;
+      color: #2f3846;
+    }
+
+    input[type="number"], input[type="text"], select {
+      width: 100%;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      padding: 0 8px;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    input[type="number"]:focus, input[type="text"]:focus, select:focus {
+      outline: 2px solid rgba(37, 99, 235, 0.16);
+      border-color: var(--blue);
+    }
+
+    .axis-head {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      margin-bottom: 4px;
+    }
+
+    .pairs {
+      display: grid;
+      gap: 8px;
+    }
+
+    .pair-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+    }
+
+    .arrow {
+      color: var(--muted);
+      text-align: center;
+      font-weight: 700;
+    }
+
+    .distances {
+      display: grid;
+      gap: 8px;
+    }
+
+    .distance-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #fbfcff;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: baseline;
+    }
+
+    .distance-item .label {
+      font-size: 13px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .distance-item .value {
+      font-size: 18px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .unit-row {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .unit-row span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    #scene {
+      width: 100%;
+      height: 100%;
+      min-height: 360px;
+      display: block;
+      background: #eef2f8;
+    }
+
+    .scene-wrap {
+      position: relative;
+      min-height: 360px;
+    }
+
+    .legend {
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      display: grid;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid rgba(217, 222, 231, 0.9);
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: var(--shadow);
+      font-size: 12px;
+      pointer-events: none;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .footer {
+      padding: 12px 18px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .status {
+      font-variant-numeric: tabular-nums;
+    }
+
+    @media (max-width: 920px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+        max-height: none;
+      }
+
+      .main {
+        min-height: 560px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="section">
+        <h1>3D Distance Visualizer</h1>
+        <p class="subtitle">O=(0,0,0), +X right, +Y forward, +Z up</p>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Unit</div>
+        <div class="unit-row">
+          <span>unit</span>
+          <input id="unitInput" type="text" value="mm">
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Points</div>
+        <div class="coord">
+          <span></span>
+          <div class="axis-head">X</div>
+          <div class="axis-head">Y</div>
+          <div class="axis-head">Z</div>
+        </div>
+        <div id="pointInputs"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Pairs</div>
+        <div id="pairInputs" class="pairs"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Distances</div>
+        <div id="distanceList" class="distances"></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>Distance View</h1>
+          <p class="subtitle">Drag to rotate, wheel to zoom</p>
+        </div>
+        <div class="toolbar">
+          <button id="resetViewBtn">Reset view</button>
+          <button id="copyJsonBtn">Copy JSON</button>
+          <label class="file-button" for="jsonFile">Load JSON</label>
+          <input id="jsonFile" type="file" accept="application/json,.json">
+          <button id="resetDataBtn" class="primary">Example data</button>
+        </div>
+      </header>
+
+      <section class="scene-wrap">
+        <canvas id="scene"></canvas>
+        <div class="legend">
+          <div class="legend-row"><span class="swatch" style="background:#2563eb"></span>P points</div>
+          <div class="legend-row"><span class="swatch" style="background:#dc3d43"></span>Q points</div>
+          <div class="legend-row"><span class="swatch" style="background:#0f9f6e"></span>distance lines</div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>Coordinate system: right-handed, O=(0,0,0)</span>
+        <span id="status" class="status"></span>
+      </footer>
+    </main>
+  </div>
+
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+    import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+
+    const pointNames = ["P1", "P2", "P3", "Q1", "Q2", "Q3"];
+    const defaultData = {
+      unit: "mm",
+      points: {
+        P1: [0, 0, 0],
+        P2: [10, 0, 0],
+        P3: [0, 10, 0],
+        Q1: [0, 0, 10],
+        Q2: [10, 10, 0],
+        Q3: [3, 4, 12]
+      },
+      pairs: [["P1", "Q1"], ["P2", "Q2"], ["P3", "Q3"]]
+    };
+
+    let data = loadStoredData();
+    const pointInputs = document.getElementById("pointInputs");
+    const pairInputs = document.getElementById("pairInputs");
+    const distanceList = document.getElementById("distanceList");
+    const unitInput = document.getElementById("unitInput");
+    const statusEl = document.getElementById("status");
+    const canvas = document.getElementById("scene");
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0xeef2f8, 1);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100000);
+    camera.position.set(36, -42, 30);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.target.set(0, 0, 0);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.72);
+    scene.add(ambient);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.85);
+    keyLight.position.set(40, -30, 50);
+    scene.add(keyLight);
+
+    const grid = new THREE.GridHelper(60, 12, 0xb9c2d0, 0xd6dce6);
+    grid.rotation.x = Math.PI / 2;
+    scene.add(grid);
+
+    const axes = new THREE.AxesHelper(20);
+    scene.add(axes);
+
+    const pointGroup = new THREE.Group();
+    const lineGroup = new THREE.Group();
+    const labelGroup = new THREE.Group();
+    scene.add(lineGroup, pointGroup, labelGroup);
+
+    const pointObjects = new Map();
+    const lineObjects = [];
+
+    function loadStoredData() {
+      try {
+        const raw = localStorage.getItem("distanceVisualizerData");
+        if (raw) return normalizeData(JSON.parse(raw));
+      } catch {
+        localStorage.removeItem("distanceVisualizerData");
+      }
+      return structuredClone(defaultData);
+    }
+
+    function normalizeData(next) {
+      const normalized = structuredClone(defaultData);
+      if (next && typeof next === "object") {
+        if (typeof next.unit === "string") normalized.unit = next.unit;
+        if (next.points && typeof next.points === "object") {
+          for (const name of pointNames) {
+            const value = next.points[name];
+            if (Array.isArray(value) && value.length === 3) {
+              normalized.points[name] = value.map((n) => Number(n) || 0);
+            } else if (value && typeof value === "object") {
+              normalized.points[name] = [
+                Number(value.x) || 0,
+                Number(value.y) || 0,
+                Number(value.z) || 0
+              ];
+            }
+          }
+        }
+        if (Array.isArray(next.pairs) && next.pairs.length >= 3) {
+          normalized.pairs = next.pairs.slice(0, 3).map((pair, idx) => {
+            if (!Array.isArray(pair) || pair.length !== 2) return defaultData.pairs[idx];
+            const a = pointNames.includes(pair[0]) ? pair[0] : defaultData.pairs[idx][0];
+            const b = pointNames.includes(pair[1]) ? pair[1] : defaultData.pairs[idx][1];
+            return [a, b];
+          });
+        }
+      }
+      return normalized;
+    }
+
+    function saveData() {
+      localStorage.setItem("distanceVisualizerData", JSON.stringify(data));
+    }
+
+    function renderInputs() {
+      unitInput.value = data.unit;
+      pointInputs.innerHTML = "";
+      for (const name of pointNames) {
+        const row = document.createElement("div");
+        row.className = "coord";
+        row.innerHTML = `<div class="name">${name}</div>`;
+        for (let axis = 0; axis < 3; axis++) {
+          const input = document.createElement("input");
+          input.type = "number";
+          input.step = "0.001";
+          input.value = data.points[name][axis];
+          input.dataset.point = name;
+          input.dataset.axis = String(axis);
+          input.addEventListener("input", onPointInput);
+          row.appendChild(input);
+        }
+        pointInputs.appendChild(row);
+      }
+
+      pairInputs.innerHTML = "";
+      for (let idx = 0; idx < 3; idx++) {
+        const pair = data.pairs[idx];
+        const row = document.createElement("div");
+        row.className = "pair-row";
+        row.appendChild(makePointSelect(pair[0], idx, 0));
+        const arrow = document.createElement("div");
+        arrow.className = "arrow";
+        arrow.textContent = "->";
+        row.appendChild(arrow);
+        row.appendChild(makePointSelect(pair[1], idx, 1));
+        pairInputs.appendChild(row);
+      }
+    }
+
+    function makePointSelect(value, pairIndex, side) {
+      const select = document.createElement("select");
+      for (const name of pointNames) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        select.appendChild(option);
+      }
+      select.value = value;
+      select.addEventListener("change", () => {
+        data.pairs[pairIndex][side] = select.value;
+        updateAll();
+      });
+      return select;
+    }
+
+    function onPointInput(event) {
+      const input = event.currentTarget;
+      const point = input.dataset.point;
+      const axis = Number(input.dataset.axis);
+      data.points[point][axis] = Number(input.value) || 0;
+      updateAll();
+    }
+
+    unitInput.addEventListener("input", () => {
+      data.unit = unitInput.value.trim() || "unit";
+      updateAll();
+    });
+
+    document.getElementById("resetDataBtn").addEventListener("click", () => {
+      data = structuredClone(defaultData);
+      renderInputs();
+      updateAll();
+    });
+
+    document.getElementById("resetViewBtn").addEventListener("click", () => {
+      camera.position.set(36, -42, 30);
+      controls.target.set(0, 0, 0);
+      controls.update();
+    });
+
+    document.getElementById("copyJsonBtn").addEventListener("click", async () => {
+      const text = JSON.stringify(data, null, 2);
+      await navigator.clipboard.writeText(text);
+      statusEl.textContent = "JSON copied";
+      setTimeout(() => updateStatus(), 1200);
+    });
+
+    document.getElementById("jsonFile").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const text = await file.text();
+      data = normalizeData(JSON.parse(text));
+      renderInputs();
+      updateAll();
+      event.target.value = "";
+    });
+
+    function distance(a, b) {
+      const pa = data.points[a];
+      const pb = data.points[b];
+      const dx = pa[0] - pb[0];
+      const dy = pa[1] - pb[1];
+      const dz = pa[2] - pb[2];
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    function updateDistanceList() {
+      distanceList.innerHTML = "";
+      for (const [a, b] of data.pairs) {
+        const item = document.createElement("div");
+        item.className = "distance-item";
+        item.innerHTML = `
+          <div class="label">${a} -> ${b}</div>
+          <div class="value">${distance(a, b).toFixed(4)} ${data.unit}</div>
+        `;
+        distanceList.appendChild(item);
+      }
+    }
+
+    function makeLabel(text, color) {
+      const spriteCanvas = document.createElement("canvas");
+      spriteCanvas.width = 128;
+      spriteCanvas.height = 48;
+      const ctx = spriteCanvas.getContext("2d");
+      ctx.font = "bold 24px Segoe UI, Arial";
+      ctx.fillStyle = "rgba(255,255,255,0.86)";
+      ctx.fillRect(0, 0, spriteCanvas.width, spriteCanvas.height);
+      ctx.fillStyle = color;
+      ctx.fillText(text, 12, 31);
+      const texture = new THREE.CanvasTexture(spriteCanvas);
+      const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+      const sprite = new THREE.Sprite(material);
+      sprite.scale.set(5.6, 2.1, 1);
+      return sprite;
+    }
+
+    function clearSceneObjects() {
+      for (const group of [pointGroup, lineGroup, labelGroup]) {
+        while (group.children.length) {
+          const obj = group.children.pop();
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+          }
+        }
+      }
+      pointObjects.clear();
+      lineObjects.length = 0;
+    }
+
+    function updateSceneObjects() {
+      clearSceneObjects();
+      const pointMaterialP = new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.45 });
+      const pointMaterialQ = new THREE.MeshStandardMaterial({ color: 0xdc3d43, roughness: 0.45 });
+      const sphereGeometry = new THREE.SphereGeometry(0.7, 24, 16);
+
+      for (const name of pointNames) {
+        const material = name.startsWith("P") ? pointMaterialP : pointMaterialQ;
+        const mesh = new THREE.Mesh(sphereGeometry, material.clone());
+        const p = data.points[name];
+        mesh.position.set(p[0], p[1], p[2]);
+        pointGroup.add(mesh);
+        pointObjects.set(name, mesh);
+
+        const label = makeLabel(name, name.startsWith("P") ? "#2563eb" : "#dc3d43");
+        label.position.set(p[0] + 0.9, p[1] + 0.9, p[2] + 0.9);
+        labelGroup.add(label);
+      }
+
+      for (const [a, b] of data.pairs) {
+        const pa = new THREE.Vector3(...data.points[a]);
+        const pb = new THREE.Vector3(...data.points[b]);
+        const geometry = new THREE.BufferGeometry().setFromPoints([pa, pb]);
+        const material = new THREE.LineBasicMaterial({ color: 0x0f9f6e, linewidth: 2 });
+        const line = new THREE.Line(geometry, material);
+        lineGroup.add(line);
+        lineObjects.push(line);
+      }
+
+      updateCameraClip();
+    }
+
+    function updateCameraClip() {
+      const values = Object.values(data.points).flat().map((n) => Math.abs(Number(n) || 0));
+      const extent = Math.max(20, ...values) * 3;
+      camera.near = Math.max(0.01, extent / 10000);
+      camera.far = Math.max(1000, extent * 20);
+      camera.updateProjectionMatrix();
+    }
+
+    function updateStatus() {
+      const values = data.pairs.map(([a, b]) => distance(a, b));
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      statusEl.textContent = `min ${min.toFixed(3)} ${data.unit} / max ${max.toFixed(3)} ${data.unit}`;
+    }
+
+    function updateAll() {
+      saveData();
+      updateDistanceList();
+      updateSceneObjects();
+      updateStatus();
+    }
+
+    function resize() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width));
+      const height = Math.max(1, Math.floor(rect.height));
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    }
+
+    function animate() {
+      resize();
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+
+    renderInputs();
+    updateAll();
+    animate();
+  </script>
+</body>
+</html>

@@ -1099,6 +1099,36 @@ static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* l
         selectTextControlMode(sharedData, CONTROL_MODE_NONE);
         return true;
     }
+    if (textEquals(cmd, "ff") || textEquals(cmd, "feedforward")) {
+        Serial.printf("<<<FEEDFORWARD enabled=%u>>>\r\n",
+                      (unsigned)sharedData->mcp_tendon_feedforward_enabled);
+        return true;
+    }
+    if (textEquals(cmd, "ff on") || textEquals(cmd, "feedforward on")) {
+        sharedData->mcp_tendon_feedforward_enabled = 1;
+        Serial.println("<<<FEEDFORWARD enabled=1>>>");
+        return true;
+    }
+    if (textEquals(cmd, "ff off") || textEquals(cmd, "feedforward off")) {
+        sharedData->mcp_tendon_feedforward_enabled = 0;
+        Serial.println("<<<FEEDFORWARD enabled=0>>>");
+        return true;
+    }
+    if (textEquals(cmd, "tension") || textEquals(cmd, "bias")) {
+        Serial.printf("<<<TENSION_BIAS enabled=%u>>>\r\n",
+                      (unsigned)sharedData->mcp_tension_bias_enabled);
+        return true;
+    }
+    if (textEquals(cmd, "tension on") || textEquals(cmd, "bias on")) {
+        sharedData->mcp_tension_bias_enabled = 1;
+        Serial.println("<<<TENSION_BIAS enabled=1>>>");
+        return true;
+    }
+    if (textEquals(cmd, "tension off") || textEquals(cmd, "bias off")) {
+        sharedData->mcp_tension_bias_enabled = 0;
+        Serial.println("<<<TENSION_BIAS enabled=0>>>");
+        return true;
+    }
     float pairJ00 = 0.0f;
     float pairJ01 = 0.0f;
     if (parseTextMcpAnglePairCommand(cmd, &pairJ00, &pairJ01)) {
@@ -1140,6 +1170,27 @@ static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* l
     }
     Serial.printf("<<<CMD:UNKNOWN %s>>>\r\n", cmd);
     return true;
+}
+
+static bool handleTextCommandSegments(TaskSharedData_t* sharedData, const uint8_t* line, size_t len)
+{
+    if (!sharedData || !line || len == 0) {
+        return false;
+    }
+
+    bool handledAny = false;
+    size_t segmentStart = 0;
+    for (size_t i = 0; i <= len; i++) {
+        if (i == len || line[i] == (uint8_t)';') {
+            if (i > segmentStart) {
+                handledAny = handleTextCommandLine(sharedData,
+                                                   line + segmentStart,
+                                                   i - segmentStart) || handledAny;
+            }
+            segmentStart = i + 1;
+        }
+    }
+    return handledAny;
 }
 
 // Apply a parsed downstream command frame.
@@ -1323,7 +1374,7 @@ void upperCommunicationTask(void* parameter)
                     break;
                 }
 
-                handleTextCommandLine(sharedData, rxBuffer + parseOffset, lineEnd - parseOffset);
+                handleTextCommandSegments(sharedData, rxBuffer + parseOffset, lineEnd - parseOffset);
                 parseOffset = lineEnd;
                 while (parseOffset < rxLen &&
                        (rxBuffer[parseOffset] == (uint8_t)'\n' ||

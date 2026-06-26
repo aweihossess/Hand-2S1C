@@ -13,6 +13,20 @@
 // Motor Abs is the servo position relative to SW Zero Ofs, so 0 means the
 // mechanical zero captured by Set Servo Zero.
 
+// Empirical five-tendon feedforward generated from the tight-tendon collection:
+//   run_data/mcp_control_20260625_215252_tension_on_fit_now_minus_bias_report.txt
+// The model target is `now - tension_bias`, so runtime tension bias can still
+// add preload independently. Values are motor counts per degree, rows M00..M04,
+// columns J00..J03.
+static const bool kUseEmpiricalMcpFeedforwardCounts = true;
+static const float kEmpiricalMcpMotorPerDeg[5][4] = {
+    { 19.525f,  11.619f,   0.848f,  -8.994f},
+    {-13.384f,  13.533f,  -7.042f,   0.826f},
+    { -5.835f,  -9.028f,  38.401f, -14.173f},
+    { 24.708f,  -7.853f, -18.443f,  29.339f},
+    {  5.597f, -30.330f, -54.012f, -30.450f}
+};
+
 static const float kTendonLengthToPulse[JOINT_COUNT] = {
     -160.0f, -160.0f, -160.0f, -160.0f, -160.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -54,26 +68,26 @@ static const float kMcpTheta4Deg = 29.0546f;
 //   I: motor counts / (deg*s)
 //   D: motor counts / (deg/s)
 static const float kMcpAngleKp[5][4] = {
-    { 6.0f,  4.0f, 0.0f, 0.0f},
-    {-6.0f,  4.0f, 0.0f, 0.0f},
-    { 2.0f,  3.0f, 5.0f, 0.0f},
-    { 2.0f, -3.0f, 3.0f, 4.0f},
-    {-3.0f, -3.0f, 6.0f, 5.0f}
+    { 30.0f,  20.0f,   0.0f,   0.0f},
+    {-30.0f,  20.0f,   0.0f,   0.0f},
+    {  0.0f,   -20.0f,  30.0f,   0.0f},
+    { 10.0f, -17.5f, -30.0f,  24.0f},
+    {-20.0f,  17.5f, -40.0f, -26.5f}
 };
 
 static const float kMcpAngleKi[5][4] = {
-    {0.0f, 0.0f, 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.0f, 0.0f}
+    { 0.90f,  0.60f,   0.00f,   0.00f},
+    {-0.90f,  0.60f,   0.00f,   0.00f},
+    { 0.00f, -0.60f,   0.90f,   0.00f},
+    { 0.30f, -0.525f, -0.90f,   2.40f},
+    { 0.00f,  0.08f,  -0.30f,   0.00f}
 };
 
 static const float kMcpAngleKd[5][4] = {
     {0.0f, 0.0f, 0.0f, 0.0f},
     {0.0f, 0.0f, 0.0f, 0.0f},
     {0.0f, 0.0f, 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 0.02f},
     {0.0f, 0.0f, 0.0f, 0.0f}
 };
 

@@ -183,6 +183,7 @@ typedef struct {
     uint8_t tendonGuardEnabled[ENCODER_TOTAL_NUM];
     int8_t tendonGuardSign[ENCODER_TOTAL_NUM];
     int16_t tendonGuardX1Abs[ENCODER_TOTAL_NUM];
+    uint8_t mcpTensionBiasEnabled;
 } ControlCommandSnapshot_t;
 
 typedef struct {
@@ -307,6 +308,8 @@ typedef struct {
     volatile uint8_t tendon_guard_enabled[ENCODER_TOTAL_NUM];
     volatile int8_t tendon_guard_sign[ENCODER_TOTAL_NUM];
     volatile int16_t tendon_guard_x1_abs[ENCODER_TOTAL_NUM];
+    volatile uint8_t mcp_tendon_feedforward_enabled;
+    volatile uint8_t mcp_tension_bias_enabled;
 
     int32_t calib_zero_raw_cache[ENCODER_TOTAL_NUM];
     volatile uint8_t calib_zero_raw_valid;
