@@ -19,6 +19,9 @@
 // add preload independently. Values are motor counts per degree, rows M00..M04,
 // columns J00..J03.
 static const bool kUseEmpiricalMcpFeedforwardCounts = true;
+// 4+1 mode: M00..M03 control the four joint DOFs, M04 is reserved as a
+// preload-only return tendon and receives only runtime tension bias.
+static const bool kMcpReturnTendonPreloadOnly = true;
 static const float kEmpiricalMcpMotorPerDeg[5][4] = {
     { 19.525f,  11.619f,   0.848f,  -8.994f},
     {-13.384f,  13.533f,  -7.042f,   0.826f},
@@ -72,7 +75,7 @@ static const float kMcpAngleKp[5][4] = {
     {-30.0f,  20.0f,   0.0f,   0.0f},
     {  0.0f,   -20.0f,  30.0f,   0.0f},
     { 10.0f, -17.5f, -30.0f,  24.0f},
-    {-20.0f,  17.5f, -40.0f, -26.5f}
+    {  0.0f,   0.0f,   0.0f,   0.0f}
 };
 
 static const float kMcpAngleKi[5][4] = {
@@ -80,7 +83,7 @@ static const float kMcpAngleKi[5][4] = {
     {-0.90f,  0.60f,   0.00f,   0.00f},
     { 0.00f, -0.60f,   0.90f,   0.00f},
     { 0.30f, -0.525f, -0.90f,   2.40f},
-    { 0.00f,  0.08f,  -0.30f,   0.00f}
+    { 0.00f,  0.00f,   0.00f,   0.00f}
 };
 
 static const float kMcpAngleKd[5][4] = {

@@ -103,6 +103,10 @@ static const float kMcpAngleKd[5][4] = {
 
 ![mcp_control_20260626_040007](assets/2026-06-26_five_tendon/mcp_control_20260626_040007_joint_step_response.png)
 
+对应舵机状态：
+
+![mcp_control_20260626_040007_motor_state](assets/2026-06-26_five_tendon/mcp_control_20260626_040007_motor_state.png)
+
 #### `mcp_control_20260626_042232`
 
 ![mcp_control_20260626_042232](assets/2026-06-26_five_tendon/mcp_control_20260626_042232_joint_step_response.png)

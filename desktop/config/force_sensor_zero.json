@@ -1,0 +1,18 @@
+{
+  "saved_at": "2026-07-02 23:29:27",
+  "description": "Force sensor no-tension zero baseline. Relative force N = (raw - baseline) / 10.",
+  "channels": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "baselines": {
+    "1": 0,
+    "2": 18,
+    "3": -12,
+    "4": 32,
+    "5": 15
+  }
+}

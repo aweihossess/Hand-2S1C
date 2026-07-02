@@ -1,0 +1,10 @@
+{
+  "saved_at": "2026-07-02 00:00:00",
+  "description": "Encoder display zero. UI relative deg = device deg - zero_deg; degree targets add zero_deg before sending.",
+  "zero_deg": {
+    "0": 2.75,
+    "1": 2.18,
+    "2": 20.19,
+    "3": -2.15
+  }
+}

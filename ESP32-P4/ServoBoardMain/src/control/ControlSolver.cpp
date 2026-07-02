@@ -46,6 +46,10 @@ static void computeEmpiricalMcpMotorCounts(const float* qDeg, float outCounts[kM
 {
     if (!qDeg || !outCounts) return;
     for (uint8_t tendonIndex = 0; tendonIndex < kMcpControlledMotorCount; tendonIndex++) {
+        if (kMcpReturnTendonPreloadOnly && tendonIndex == kMcpControlledMotorCount - 1) {
+            outCounts[tendonIndex] = 0.0f;
+            continue;
+        }
         float value = 0.0f;
         for (uint8_t jointIndex = 0; jointIndex < kMcpControlledJointCount; jointIndex++) {
             const float q = isfinite(qDeg[jointIndex]) ? qDeg[jointIndex] : 0.0f;
@@ -387,6 +391,15 @@ int16_t ControlSolver::computeTendonCascadeOutput(uint8_t tendonIndex, int32_t a
         _tendonFirstLength[tendonIndex] = _actualTendonLength[tendonIndex];
         _tendonPrevMotorError[tendonIndex] = 0.0f;
         _tendonControllerInitialized[tendonIndex] = true;
+    }
+
+    if (kMcpReturnTendonPreloadOnly && tendonIndex == kMcpControlledMotorCount - 1) {
+        _targetTendonLength[tendonIndex] = 0.0f;
+        _actualTendonLength[tendonIndex] = 0.0f;
+        _tendonFirstLength[tendonIndex] = 0.0f;
+        _mappedMotorTarget[tendonIndex] = 0.0f;
+        _tendonPrevMotorError[tendonIndex] = -(float)actualMotorAbs;
+        return 0;
     }
 
     const float lengthToPulse = _tendonLengthToPulse[tendonIndex];

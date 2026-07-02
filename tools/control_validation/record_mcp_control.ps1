@@ -21,6 +21,7 @@ param(
     [double]$SineInterval = 0.1,
     [switch]$PidZeroThenFeedforwardStep,
     [switch]$PidZeroThenFeedforwardSine,
+    [switch]$SkipStepZeroSettle,
     [switch]$EmpiricalCollect,
     [switch]$FeedforwardCollect,
     [switch]$FeedforwardGrid,
@@ -413,14 +414,20 @@ try {
         if (-not $scheduledDone -and $now -ge $scheduledStart) {
             if ($StepJoint -ge 0 -or -not [string]::IsNullOrWhiteSpace($StepTargets)) {
                 if ($stepState -eq "idle") {
-                    Write-Host ("Settling J0/J1/J2/J3 to 0 deg; waiting for all abs(actual) <= {0:F2} deg" -f $StepSettleTolerance)
-                    foreach ($j in 0..3) {
-                        Write-SerialCommand $serial ("j{0} 0.000" -f $j)
-                        Start-Sleep -Milliseconds 30
+                    if ($SkipStepZeroSettle -and -not $PidZeroThenFeedforwardStep) {
+                        Write-Host ("Skipping joint zero settle; holding current baseline {0:F1}s" -f $StepBaselineHold)
+                        $stepBaselineUntil = $now.AddMilliseconds([int]($StepBaselineHold * 1000))
+                        $stepState = "baseline"
+                    } else {
+                        Write-Host ("Settling J0/J1/J2/J3 to 0 deg; waiting for all abs(actual) <= {0:F2} deg" -f $StepSettleTolerance)
+                        foreach ($j in 0..3) {
+                            Write-SerialCommand $serial ("j{0} 0.000" -f $j)
+                            Start-Sleep -Milliseconds 30
+                        }
+                        $stepSettleStart = $now
+                        $nextStepTime = $now.AddSeconds(1)
+                        $stepState = "settle"
                     }
-                    $stepSettleStart = $now
-                    $nextStepTime = $now.AddSeconds(1)
-                    $stepState = "settle"
                 } elseif ($stepState -eq "settle") {
                     $zeroTargets = @(0.0, 0.0, 0.0, 0.0)
                     if (Test-JointsNearTargets $latestJointActual $zeroTargets $StepSettleTolerance) {
@@ -753,7 +760,7 @@ try {
                 $row.collect_point_count = $currentCollectPointCount
                 for ($j = 0; $j -lt 4; $j++) {
                     $actualValue = $row.("j${j}_actual")
-                    if ($actualValue -ne "") {
+                    if ($null -ne $actualValue -and "$actualValue" -ne "") {
                         $latestJointActual[$j] = [double]$actualValue
                     }
                 }
