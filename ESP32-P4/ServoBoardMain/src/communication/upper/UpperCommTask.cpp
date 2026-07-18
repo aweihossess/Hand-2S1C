@@ -18,6 +18,9 @@ extern volatile uint8_t g_calibrationUIStatus;
 // 3) keep protocol ACK and fault heartbeat reporting synchronized.
 static uint8_t g_sensorStreamMode = SENSOR_STREAM_MODE_SIGNED_I16;
 static bool g_textMonitorMode = false;
+static const int32_t kHostTensionBiasAbsLimitCounts = 7200;
+static const uint8_t kHostReturnTensionBiasChannel = 4;
+static const int32_t kHostReturnTensionBiasAbsLimitCounts = 7200;
 
 // Joint-mode motion gate diagnostics bits (device -> host).
 static const uint32_t kJointGateNoTarget = (1UL << 0);
@@ -264,10 +267,13 @@ static void sendDataPacket(ServoStatus_t* pServo,
         {
             const int16_t speed = pTelemetry->speed[i];
             const int16_t load = pTelemetry->load[i];
+            const int16_t current = pTelemetry->current[i];
             buffer[idx++] = (uint8_t)(((uint16_t)speed >> 8) & 0xFF);
             buffer[idx++] = (uint8_t)((uint16_t)speed & 0xFF);
             buffer[idx++] = (uint8_t)(((uint16_t)load >> 8) & 0xFF);
             buffer[idx++] = (uint8_t)((uint16_t)load & 0xFF);
+            buffer[idx++] = (uint8_t)(((uint16_t)current >> 8) & 0xFF);
+            buffer[idx++] = (uint8_t)((uint16_t)current & 0xFF);
             buffer[idx++] = pTelemetry->voltage[i];
             buffer[idx++] = pTelemetry->temperature[i];
             buffer[idx++] = pTelemetry->onlineStatus[i];
@@ -308,6 +314,29 @@ static void sendDataPacket(ServoStatus_t* pServo,
         const uint16_t cmdPosRaw = (uint16_t)pJointDebug->cmdTargetPos;
         buffer[idx++] = (uint8_t)((cmdPosRaw >> 8) & 0xFF);
         buffer[idx++] = (uint8_t)(cmdPosRaw & 0xFF);
+        const uint32_t controlTimeRaw = pJointDebug->timestamp;
+        buffer[idx++] = (uint8_t)((controlTimeRaw >> 24) & 0xFF);
+        buffer[idx++] = (uint8_t)((controlTimeRaw >> 16) & 0xFF);
+        buffer[idx++] = (uint8_t)((controlTimeRaw >> 8) & 0xFF);
+        buffer[idx++] = (uint8_t)(controlTimeRaw & 0xFF);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->qRefDeg);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->qFbFilteredDeg);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->qFbVelocityDegPerSec);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->jointErrorDeg);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->jointIntegralDegSec);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->feedforwardCounts);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->anglePCounts);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->angleICounts);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->angleDCounts);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->angleFeedbackCounts);
+        const uint16_t tensionBiasRaw = (uint16_t)pJointDebug->tensionBiasCounts;
+        buffer[idx++] = (uint8_t)((tensionBiasRaw >> 8) & 0xFF);
+        buffer[idx++] = (uint8_t)(tensionBiasRaw & 0xFF);
+        const uint16_t preLimitRaw = (uint16_t)pJointDebug->preLimitTargetPos;
+        buffer[idx++] = (uint8_t)((preLimitRaw >> 8) & 0xFF);
+        buffer[idx++] = (uint8_t)(preLimitRaw & 0xFF);
+        buffer[idx++] = pJointDebug->tensionBiasEnabled;
+        buffer[idx++] = pJointDebug->commandLimitFlags;
     }
     else
     {
@@ -449,6 +478,9 @@ static void requestServoInternalZero(TaskSharedData_t* sharedData)
         memset(sharedData->targetAngles, 0, sizeof(sharedData->targetAngles));
         memset(sharedData->motorTargetRaw, 0, sizeof(sharedData->motorTargetRaw));
         memset(sharedData->motorSweepTargetRaw, 0, sizeof(sharedData->motorSweepTargetRaw));
+        memset((void*)sharedData->mcp_tension_bias_host_counts, 0,
+               sizeof(sharedData->mcp_tension_bias_host_counts));
+        sharedData->mcp_tension_bias_enabled = 0;
         sharedData->joint_command_token = 0;
         sharedData->motor_command_token = 0;
         sharedData->motor_sweep_command_token = 0;
@@ -561,6 +593,64 @@ static bool parseTextMotorTargetCommand(const char* cmd, uint8_t* channelOut, in
 
     *channelOut = (uint8_t)channel;
     *targetOut = target;
+    return true;
+}
+
+static bool parseTextTensionBiasCommand(const char* cmd, uint8_t* channelOut, int32_t* biasOut, bool* clearOut)
+{
+    if (!cmd || !channelOut || !biasOut || !clearOut) {
+        return false;
+    }
+
+    const char* p = cmd;
+    if (strncmp(p, "tensionbias", 11) == 0) {
+        p += 11;
+    } else if (strncmp(p, "tbias", 5) == 0) {
+        p += 5;
+    } else if (strncmp(p, "biasabs", 7) == 0) {
+        p += 7;
+    } else {
+        return false;
+    }
+
+    p = skipTextSpaces(p);
+    if (!p || *p == '\0') {
+        return false;
+    }
+    if (strncmp(p, "clear", 5) == 0 || strncmp(p, "reset", 5) == 0) {
+        *clearOut = true;
+        *channelOut = 0;
+        *biasOut = 0;
+        return true;
+    }
+
+    if (*p == 'm' || *p == 'M') {
+        p++;
+    }
+    int32_t channel = 0;
+    if (!parseTextInt32(p, &channel, &p)) {
+        return false;
+    }
+    int32_t bias = 0;
+    if (!parseTextInt32(p, &bias, NULL)) {
+        return false;
+    }
+    if (channel < 0 || channel >= SERVO_TOTAL_NUM) {
+        Serial.printf("<<<TENSION_BIAS_HOST bad_channel=%ld>>>\r\n", (long)channel);
+        return false;
+    }
+    const int32_t biasLimit = ((uint8_t)channel == kHostReturnTensionBiasChannel)
+        ? kHostReturnTensionBiasAbsLimitCounts
+        : kHostTensionBiasAbsLimitCounts;
+    if (bias > biasLimit) {
+        bias = biasLimit;
+    } else if (bias < -biasLimit) {
+        bias = -biasLimit;
+    }
+
+    *clearOut = false;
+    *channelOut = (uint8_t)channel;
+    *biasOut = bias;
     return true;
 }
 
@@ -760,8 +850,37 @@ static void applyTextMotorTarget(TaskSharedData_t* sharedData, uint8_t channel, 
                   (unsigned)sharedData->system_state,
                   (unsigned)sharedData->control_mode);
     if (!willApply) {
-        Serial.println("<<<MOTOR_TARGET pending: send START then DIRECT to apply>>>");
+        Serial.println("<<<MOTOR_TARGET pending: requires DIRECT mode and START>>>");
     }
+}
+
+static void applyTextTensionBiasCommand(
+    TaskSharedData_t* sharedData,
+    uint8_t channel,
+    int32_t bias,
+    bool clearBias)
+{
+    if (!sharedData) {
+        return;
+    }
+    if (clearBias) {
+        Serial.println("<<<TENSION_BIAS_HOST clear_requires_zero=1>>>");
+        return;
+    }
+
+    SemaphoreHandle_t lock = sharedData->commandStateMutex;
+    if (lock && xSemaphoreTake(lock, pdMS_TO_TICKS(10)) != pdTRUE) {
+        Serial.println("<<<TENSION_BIAS_HOST lock_timeout>>>");
+        return;
+    }
+    sharedData->mcp_tension_bias_host_counts[channel] = bias;
+    if (lock) {
+        xSemaphoreGive(lock);
+    }
+
+    Serial.printf("<<<TENSION_BIAS_HOST M%02u bias=%ld>>>\r\n",
+                  (unsigned)channel,
+                  (long)bias);
 }
 
 static void applyTextJointTarget(TaskSharedData_t* sharedData, uint8_t joint, float targetDeg)
@@ -1114,9 +1233,46 @@ static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* l
         Serial.println("<<<FEEDFORWARD enabled=0>>>");
         return true;
     }
+    if (textEquals(cmd, "kp") || textEquals(cmd, "pgain")) {
+        Serial.printf("<<<MCP_ANGLE_KP scale=%.4f>>\r\n",
+                      (double)sharedData->mcp_angle_kp_scale);
+        return true;
+    }
+    if (strncmp(cmd, "kp ", 3) == 0 || strncmp(cmd, "pgain ", 6) == 0) {
+        const char* valueText = (cmd[0] == 'k') ? (cmd + 3) : (cmd + 6);
+        float scale = 0.0f;
+        if (!parseTextFloat(valueText, &scale, NULL) || !isfinite(scale) || scale < 0.0f || scale > 5.0f) {
+            Serial.println("<<<MCP_ANGLE_KP bad_value range=0..5>>>");
+            return true;
+        }
+        sharedData->mcp_angle_kp_scale = scale;
+        Serial.printf("<<<MCP_ANGLE_KP scale=%.4f>>>\r\n", (double)scale);
+        return true;
+    }
+    if (textEquals(cmd, "ki") || textEquals(cmd, "igain")) {
+        Serial.printf("<<<MCP_ANGLE_KI scale=%.6f>>\r\n",
+                      (double)sharedData->mcp_angle_ki_scale);
+        return true;
+    }
+    if (strncmp(cmd, "ki ", 3) == 0 || strncmp(cmd, "igain ", 6) == 0) {
+        const char* valueText = (cmd[0] == 'k') ? (cmd + 3) : (cmd + 6);
+        float scale = 0.0f;
+        if (!parseTextFloat(valueText, &scale, NULL) || !isfinite(scale) || scale < 0.0f || scale > 1.0f) {
+            Serial.println("<<<MCP_ANGLE_KI bad_value range=0..1>>>");
+            return true;
+        }
+        sharedData->mcp_angle_ki_scale = scale;
+        Serial.printf("<<<MCP_ANGLE_KI scale=%.6f>>>\r\n", (double)scale);
+        return true;
+    }
     if (textEquals(cmd, "tension") || textEquals(cmd, "bias")) {
-        Serial.printf("<<<TENSION_BIAS enabled=%u>>>\r\n",
-                      (unsigned)sharedData->mcp_tension_bias_enabled);
+        Serial.printf("<<<TENSION_BIAS enabled=%u host M00=%ld M01=%ld M02=%ld M03=%ld M04=%ld>>>\r\n",
+                      (unsigned)sharedData->mcp_tension_bias_enabled,
+                      (long)sharedData->mcp_tension_bias_host_counts[0],
+                      (long)sharedData->mcp_tension_bias_host_counts[1],
+                      (long)sharedData->mcp_tension_bias_host_counts[2],
+                      (long)sharedData->mcp_tension_bias_host_counts[3],
+                      (long)sharedData->mcp_tension_bias_host_counts[4]);
         return true;
     }
     if (textEquals(cmd, "tension on") || textEquals(cmd, "bias on")) {
@@ -1127,6 +1283,13 @@ static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* l
     if (textEquals(cmd, "tension off") || textEquals(cmd, "bias off")) {
         sharedData->mcp_tension_bias_enabled = 0;
         Serial.println("<<<TENSION_BIAS enabled=0>>>");
+        return true;
+    }
+    uint8_t tensionBiasChannel = 0;
+    int32_t tensionBiasValue = 0;
+    bool tensionBiasClear = false;
+    if (parseTextTensionBiasCommand(cmd, &tensionBiasChannel, &tensionBiasValue, &tensionBiasClear)) {
+        applyTextTensionBiasCommand(sharedData, tensionBiasChannel, tensionBiasValue, tensionBiasClear);
         return true;
     }
     float pairJ00 = 0.0f;
@@ -1270,6 +1433,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
         int32_t motorTargets[SERVO_TOTAL_NUM] = {0};
         if (parseInt16ArrayBigEndian(frame + 1, frameLen - 1, motorTargets, SERVO_TOTAL_NUM)) {
             upperApplyMotorTargets(sharedData, motorTargets, SERVO_TOTAL_NUM, MOTOR_DIRECT_SOURCE_ABSOLUTE);
+            sendProtoAckPacket(CMD_MOTOR_POS_ABS, CONTROL_MODE_DIRECT_MOTOR, PROTO_ACK_STATUS_OK);
         }
         return;
     }

@@ -1,5 +1,7 @@
 # Hand-2S1C Tendon Feedforward + Angle PID Firmware
 
+> **当前五腱四关节实现说明：** 本 README 下方保留了早期两腱调试记录，当前运行时已经演进为五腱 `R 前馈 + PI 角度反馈 + 任务投影 + αn 零空间张力分配`。请优先阅读 [`docs/current_five_tendon_control_logic.md`](docs/current_five_tendon_control_logic.md)。
+
 This branch is the next control experiment after the tendon-length PD version.
 The core idea is:
 

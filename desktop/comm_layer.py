@@ -393,10 +393,11 @@ class LowerComputerComm:
             elif pkt_type == 0x05:
                 parsed = parse_servo_telem_packet(payload)
                 if parsed is not None:
-                    speeds, loads, volts, temps, online = parsed
+                    speeds, loads, currents, volts, temps, online = parsed
                     for i in range(min(MOTOR_COUNT, len(speeds))):
                         model.servo_speed[i] = int(speeds[i])
                         model.servo_load[i] = int(loads[i])
+                        model.servo_current[i] = int(currents[i])
                         model.servo_voltage[i] = int(volts[i])
                         model.servo_temperature[i] = int(temps[i])
                         model.servo_telem_online[i] = bool(online[i]) if i < len(online) else False

@@ -30,6 +30,10 @@ private:
     static constexpr uint16_t AS5047P_REG_ANGLECOM = 0x3FFF;
 
     static constexpr uint8_t MAX_RECOVERY = 3;
+    // A single 0x0000 is a valid AS5047P angle at the wrap point.  All 21
+    // channels returning zero together for a sustained period is not a valid
+    // hand pose and indicates a wrong mux topology or a dead SPI path.
+    static constexpr uint8_t ALL_ZERO_FRAME_LIMIT = 20;
 
     spi_device_handle_t _spi;
     const uint8_t group_sizes_[GROUP_COUNT] = {4, 4, 4, 4, 5};
@@ -38,6 +42,7 @@ private:
     uint16_t _cmdPipeline[ENCODER_TOTAL_NUM];
     uint16_t _latchedErrorCodes[ENCODER_TOTAL_NUM];
     uint8_t _recoveryAttempts[ENCODER_TOTAL_NUM];
+    uint8_t _allZeroFrameStreak;
 
     void setupSPI();
     void setMux(uint8_t channel);

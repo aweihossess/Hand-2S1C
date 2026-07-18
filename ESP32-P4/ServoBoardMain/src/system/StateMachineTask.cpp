@@ -124,9 +124,9 @@ static void handleSystemEvent(TaskSharedData_t* sharedData, const SystemEvent_t&
     switch (event.event)
     {
         case SYSTEM_EVENT_START:
-            // START 是普通控制重新取得舵机目标所有权的唯一入口。
+            // START 只重新取得输出所有权。上位机会在 START 序列中先写入
+            // 当前模式和目标；这里不能清命令快照，否则会产生一次零目标瞬态。
             resetServoTargetQueue(sharedData);
-            resetCommandState(sharedData);
             sharedData->servo_target_owner = SERVO_TARGET_OWNER_CONTROL;
             sharedData->control_enabled = 1;
             resetControlAndFaultTokens(sharedData);

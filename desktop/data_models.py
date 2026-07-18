@@ -439,6 +439,7 @@ class HandModel:
     # 伺服遥测数据（来自 PACKET_TYPE_SERVO_TELEM）
     servo_speed: List[int] = field(default_factory=lambda: [0] * MOTOR_COUNT)
     servo_load: List[int] = field(default_factory=lambda: [0] * MOTOR_COUNT)
+    servo_current: List[int] = field(default_factory=lambda: [0] * MOTOR_COUNT)
     servo_voltage: List[int] = field(default_factory=lambda: [0] * MOTOR_COUNT)
     servo_temperature: List[int] = field(default_factory=lambda: [0] * MOTOR_COUNT)
     servo_telem_online: List[bool] = field(default_factory=lambda: [False] * MOTOR_COUNT)
@@ -511,6 +512,7 @@ class HandModel:
         self.servo_raw_online = list(other.servo_raw_online)
         self.servo_speed = list(other.servo_speed)
         self.servo_load = list(other.servo_load)
+        self.servo_current = list(other.servo_current)
         self.servo_voltage = list(other.servo_voltage)
         self.servo_temperature = list(other.servo_temperature)
         self.servo_telem_online = list(other.servo_telem_online)

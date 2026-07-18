@@ -13,21 +13,44 @@
 // Motor Abs is the servo position relative to SW Zero Ofs, so 0 means the
 // mechanical zero captured by Set Servo Zero.
 
-// Empirical five-tendon feedforward generated from the tight-tendon collection:
-//   run_data/mcp_control_20260625_215252_tension_on_fit_now_minus_bias_report.txt
-// The model target is `now - tension_bias`, so runtime tension bias can still
-// add preload independently. Values are motor counts per degree, rows M00..M04,
-// columns J00..J03.
-static const bool kUseEmpiricalMcpFeedforwardCounts = true;
-// 4+1 mode: M00..M03 control the four joint DOFs, M04 is reserved as a
-// preload-only return tendon and receives only runtime tension bias.
-static const bool kMcpReturnTendonPreloadOnly = true;
-static const float kEmpiricalMcpMotorPerDeg[5][4] = {
-    { 19.525f,  11.619f,   0.848f,  -8.994f},
-    {-13.384f,  13.533f,  -7.042f,   0.826f},
-    { -5.835f,  -9.028f,  38.401f, -14.173f},
-    { 24.708f,  -7.853f, -18.443f,  29.339f},
-    {  5.597f, -30.330f, -54.012f, -30.450f}
+// Identified local tendon model used by the runtime feedforward:
+//
+//   delta_L_ff_counts / 200 = R * (q_ref - q_entry)_rad
+//
+// This is the feedforward branch.  It depends on the commanded reference
+// displacement from the pose captured when joint control starts; it does not
+// use the tracking error.  Delta-F is intentionally not included because it
+// is not known at command time, and fitted residual e is not repeatedly
+// injected into the controller.
+// Units of R: mm/rad. Rows are M00..M04 and columns are J00..J03.
+// Fit revision 2026-07-18: 1695 stable endpoints from nine experiments;
+// requires all four encoders valid, J01 > 0 deg and all five tension readings
+// <= 0 N.  The fit uses the physical tendon sparsity pattern, a separate e for
+// each initial pose and Huber robust regression.
+static const float kMcpCountsPerMm = 200.0f;
+// Finite-increment limits for the 10 ms control loop.  A new joint target is
+// approached as a sequence of small reference and motor-position steps rather
+// than one large absolute move.
+static const float kMcpReferenceMaxStepDeg = 0.25f;
+static const float kFittedMcpR[5][4] = {
+    { 3.6109f,  3.4232f,  0.0000f,  0.0000f},
+    {-2.9767f,  4.0643f,  0.0000f,  0.0000f},
+    {-1.9980f, -1.3476f,  2.9110f,  0.0000f},
+    { 2.5066f, -1.5569f,  0.0000f,  3.6078f},
+    { 0.0000f, -3.8985f, -4.3955f, -3.3443f}
+};
+
+// Orthogonal task-space projector Q = R * pinv(R), evaluated from the fitted
+// matrix above.  Q keeps only actuator displacements that can be produced by
+// the four joint coordinates.  The one-dimensional internal-tension motion
+// is deliberately added after this projection, so Q must never be applied to
+// the host-provided tension bias alpha*n.
+static const float kMcpTaskProjector[5][5] = {
+    { 0.83682277f, -0.15979540f, -0.24728505f, -0.15180796f, -0.16376903f},
+    {-0.15979540f,  0.84351634f, -0.24216010f, -0.14866176f, -0.16037494f},
+    {-0.24728505f, -0.24216010f,  0.62525472f, -0.23005563f, -0.24818189f},
+    {-0.15180796f, -0.14866176f, -0.23005563f,  0.85876915f, -0.15235854f},
+    {-0.16376903f, -0.16037494f, -0.24818189f, -0.15235854f,  0.83563702f}
 };
 
 static const float kTendonLengthToPulse[JOINT_COUNT] = {
@@ -36,70 +59,37 @@ static const float kTendonLengthToPulse[JOINT_COUNT] = {
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
 };
 
-// MCP feedforward geometry, in mm and degrees.
-// These parameters define the A1D1/A2D2 tendon length model:
-// A1D1 = [cos(t1)*(L1 + L2*cos(t2 + To)) - L3*sin(t1) - X1,
-//         -L2*sin(t2 + To) - Y1,
-//         sin(t1)*(L1 + L2*cos(t2 + To)) + L3*cos(t1) - Z1]
-// A2D2 = [cos(t1)*(L1 + L2*cos(t2 + To)) + L3*sin(t1) - X1,
-//         -L2*sin(t2 + To) - Y1,
-//         sin(t1)*(L1 + L2*cos(t2 + To)) - L3*cos(t1) + Z1]
-// AC   = [cos(t1)*(L1 + L4*cos(t2 + T4)) - X3,
-//         -L4*sin(t2 + T4) - Y3,
-//         sin(t1)*(L1 + L4*cos(t2 + T4)) - Z3]
-static const float kMcpGeometryX1Mm = -3.66f;
-static const float kMcpGeometryY1Mm = 4.25f;
-static const float kMcpGeometryZ1Mm = 8.58f;
-static const float kMcpGeometryL1Mm = 13.00f;
-static const float kMcpGeometryL2Mm = 10.08f;
-static const float kMcpGeometryL3Mm = 4.5f;
-static const float kMcpThetaOffsetDeg = -36.5f;
-static const float kMcpGeometryX3Mm = -7.06f;
-static const float kMcpGeometryY3Mm = -5.08f;
-static const float kMcpGeometryZ3Mm = 0.0f;
-static const float kMcpGeometryL4Mm = 9.27f;
-static const float kMcpTheta4Deg = 29.0546f;
-
-// Angle feedback correction for the five-tendon actuator set.
-// Rows are motors/tendons M00..M04.
-// Columns are joints: 0=J00/MCP-AA, 1=J01/MCP-FE, 2=J02/PIP-FE, 3=J03/DIP-FE.
-// Keep these gains conservative while the new five-tendon length model is
-// being validated. The LUT feedforward supplies the nominal motor target, and
-// this matrix adds a small encoder-error correction in motor counts.
-// Units:
-//   P: motor counts / deg
-//   I: motor counts / (deg*s)
-//   D: motor counts / (deg/s)
-static const float kMcpAngleKp[5][4] = {
-    { 30.0f,  20.0f,   0.0f,   0.0f},
-    {-30.0f,  20.0f,   0.0f,   0.0f},
-    {  0.0f,   -20.0f,  30.0f,   0.0f},
-    { 10.0f, -17.5f, -30.0f,  24.0f},
-    {  0.0f,   0.0f,   0.0f,   0.0f}
+// PI angle feedback correction for the five-tendon actuator set:
+//
+//   delta_L_P_counts = 200 * Kp * P * (q_ref - q_feedback)_rad
+//   delta_L_I_counts = 200 * Ki * P * integral(q_ref - q_feedback)_rad_s
+//
+// P is the fixed physical tendon/joint coupling matrix below.  Kp is a
+// separate dimensionless runtime scale, so tuning Kp never changes the
+// coupling directions or sparsity of P.
+// Rows: M00..M04. Columns: J00..J03. Unit of P: mm/rad.
+static const float kMcpAnglePBase[5][4] = {
+    { 4.3f,  5.9f,  0.0f,  0.0f},
+    {-4.3f,  5.9f,  0.0f,  0.0f},
+    {-1.2f, -3.0f,  6.0f,  0.0f},
+    { 1.2f, -3.0f,  0.0f,  4.8f},
+    { 0.0f, -6.2f, -6.0f, -6.2f}
 };
 
-static const float kMcpAngleKi[5][4] = {
-    { 0.90f,  0.60f,   0.00f,   0.00f},
-    {-0.90f,  0.60f,   0.00f,   0.00f},
-    { 0.00f, -0.60f,   0.90f,   0.00f},
-    { 0.30f, -0.525f, -0.90f,   2.40f},
-    { 0.00f,  0.00f,   0.00f,   0.00f}
-};
+// Safe initial value.  It can be changed online with "kp <value>" without
+// rebuilding the firmware.  Start low and increase after small-angle tests.
+static const float kDefaultMcpAngleKpScale = 0.10f;
 
-static const float kMcpAngleKd[5][4] = {
-    {0.0f, 0.0f, 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.0f, 0.02f},
-    {0.0f, 0.0f, 0.0f, 0.0f}
-};
-
-static const float kMcpAngleIntegralLimitDegSec[4] = {
-    30.0f, 60.0f, 60.0f, 60.0f
-};
+// Ki is in 1/s.  Integration starts only after the finite-step reference has
+// reached the requested target.  Errors inside the deadband are not
+// integrated.  There is intentionally no separate I-state or I-output limit;
+// the combined projected PI vector is uniformly scaled when any one channel
+// reaches the actuator-output boundary.  Uniform scaling preserves range(R).
+static const float kDefaultMcpAngleKiScale = 0.005f;
+static const float kMcpAngleIntegralDeadbandDeg = 0.20f;
 
 static const float kMcpAngleFeedbackLimitCounts[5] = {
-    2400.0f, 2400.0f, 2400.0f, 2400.0f, 2400.0f
+    2000.0f, 2000.0f, 2000.0f, 2000.0f, 2000.0f
 };
 
 // Motor position loop. Output is a per-cycle Motor Abs step.
@@ -116,7 +106,7 @@ static const float kTendonMotorKd[JOINT_COUNT] = {
 };
 
 static const float kTendonMotorOutputLimit[JOINT_COUNT] = {
-    20.0f, 20.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f,
+    20.0f, 20.0f, 20.0f, 20.0f, 20.0f, 4096.0f, 4096.0f,
     4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f,
     4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f
 };

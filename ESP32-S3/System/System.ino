@@ -48,7 +48,13 @@ void setup() {
 }
 
 void printSystemMonitor() {
-    EncoderData enc = encoders.getData();
+    // HalEncoders owns a stateful SPI command pipeline and must only be read by
+    // Task_Encoders during normal operation. Peeking the published queue keeps
+    // this monitor from racing the 200 Hz acquisition task.
+    EncoderData enc{};
+    if (xQueueEncoderData == NULL || xQueuePeek(xQueueEncoderData, &enc, 0) != pdTRUE) {
+        return;
+    }
 
     Serial.println("\n======= [ XSimple Monitor ] =======");
     Serial.println(">>> Encoders (Final Angle: 0~16383)");

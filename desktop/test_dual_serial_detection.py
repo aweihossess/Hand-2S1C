@@ -28,6 +28,7 @@ from force_sensor_monitor import (  # noqa: E402
     decode_live_weight_response,
     format_force_n,
     format_hex,
+    force_motor_label,
     list_serial_ports,
     open_serial_port,
     parse_encoder_sensor_payload,
@@ -133,7 +134,7 @@ def update_encoder_servo_from_frame(result: EncoderServoReadResult, pkt_type: in
         parsed = parse_servo_telem_payload(payload)
         if parsed is None:
             return
-        _speed, _load, _voltage, _temperature, online = parsed
+        _speed, _load, _current, _voltage, _temperature, online = parsed
         result.servo_telem_frames += 1
         result.servo_online = [result.servo_online[index] or online[index] for index in range(SERVO_COUNT)]
         return
@@ -305,7 +306,7 @@ def print_force_summary(result: ForceReadResult) -> None:
         for channel in DISPLAY_CHANNELS:
             if channel in result.values:
                 value = result.values[channel]
-                print(f"  CH{channel}: raw={value} force={format_force_n(value)}")
+                print(f"  CH{channel} / {force_motor_label(channel)}: raw={value} force={format_force_n(value)}")
     if result.errors:
         print("  errors:")
         for error in result.errors[:5]:

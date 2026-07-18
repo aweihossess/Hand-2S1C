@@ -20,8 +20,16 @@
 #define MAX_SERVOS_PER_BUS 8
 #define MAX_SERVO_ID 32
 #define SERVO_SYNC_READ_TIMEOUT_MS_DEFAULT 3
-#define SERVO_TARGET_SPEED_DEFAULT 120
-#define SERVO_TARGET_ACC_DEFAULT 10
+// STS3215 performance profile (wheel/speed mode):
+//   speed: 254 * 0.732 rpm = 185.928 rpm command. This is above the servo's
+//          physical no-load speed, so the motor itself remains the limiter.
+//   accel: 254 * 8.7 deg/s^2 = 2209.8 deg/s^2.
+// Keep one profile for direct-ABS and joint-control paths so switching modes
+// does not silently fall back to the former low-acceleration setting.
+#define SERVO_TARGET_SPEED_PERFORMANCE 254
+#define SERVO_TARGET_ACC_PERFORMANCE 254
+#define SERVO_TARGET_SPEED_DEFAULT SERVO_TARGET_SPEED_PERFORMANCE
+#define SERVO_TARGET_ACC_DEFAULT SERVO_TARGET_ACC_PERFORMANCE
 #define TACTILE_GROUP_NUM 5
 #define TACTILE_SENSOR_PER_GROUP 3
 #define TACTILE_AXIS_NUM 3
@@ -184,6 +192,7 @@ typedef struct {
     int8_t tendonGuardSign[ENCODER_TOTAL_NUM];
     int16_t tendonGuardX1Abs[ENCODER_TOTAL_NUM];
     uint8_t mcpTensionBiasEnabled;
+    int32_t mcpTensionBiasHostCounts[SERVO_TOTAL_NUM];
 } ControlCommandSnapshot_t;
 
 typedef struct {
@@ -226,14 +235,28 @@ typedef struct {
     float targetLength;
     float actualLength;
     float mappedMotorTarget;
+    float qRefDeg;
+    float qFbFilteredDeg;
+    float qFbVelocityDegPerSec;
+    float jointErrorDeg;
+    float jointIntegralDegSec;
+    float feedforwardCounts;
+    float anglePCounts;
+    float angleICounts;
+    float angleDCounts;
+    float angleFeedbackCounts;
     int32_t motorZeroAbs;
+    int16_t tensionBiasCounts;
     int16_t solverOutputPos;
+    int16_t preLimitTargetPos;
     int16_t cmdTargetPos;
     uint32_t timestamp;
     uint8_t jointIndex;
     uint8_t valid;
     uint8_t cmdValid;
     uint8_t zeroHoming;
+    uint8_t tensionBiasEnabled;
+    uint8_t commandLimitFlags;
 } JointDebugData_t;
 
 typedef struct {
@@ -309,7 +332,10 @@ typedef struct {
     volatile int8_t tendon_guard_sign[ENCODER_TOTAL_NUM];
     volatile int16_t tendon_guard_x1_abs[ENCODER_TOTAL_NUM];
     volatile uint8_t mcp_tendon_feedforward_enabled;
+    volatile float mcp_angle_kp_scale;
+    volatile float mcp_angle_ki_scale;
     volatile uint8_t mcp_tension_bias_enabled;
+    volatile int32_t mcp_tension_bias_host_counts[SERVO_TOTAL_NUM];
 
     int32_t calib_zero_raw_cache[ENCODER_TOTAL_NUM];
     volatile uint8_t calib_zero_raw_valid;

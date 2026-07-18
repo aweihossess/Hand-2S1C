@@ -99,6 +99,7 @@ def _snapshot_controller_state(controller: HandController) -> Dict[str, object]:
             "servo_online": list(s.servo_online),
             "servo_speed": list(s.servo_speed),
             "servo_load": list(s.servo_load),
+            "servo_current": list(s.servo_current),
             "servo_voltage": list(s.servo_voltage),
             "servo_temp": list(s.servo_temperature),
             "servo_telem_online": list(s.servo_telem_online),

@@ -25,13 +25,15 @@ void Task_SysMgr(void *pvParameters) {
 
         Serial.println("[SysMgr] Calibration Sequence Started...");
 
-        // 1. 先获取数据 (此时 xEncTask 还在运行，确保 SPI 锁能正常获取和释放)
-        EncoderData currentData = encoders.getData(); 
-        
-        // 2. 数据拿到后，再挂起任务 (为了安全的操作)
+        // HalEncoders contains a stateful SPI pipeline. Suspend the 200 Hz
+        // acquisition task before taking the calibration snapshot so the two
+        // tasks cannot transact on the encoder SPI bus concurrently.
         if (xEncTask) {
             vTaskSuspend(xEncTask);
         }
+        EncoderData currentData = encoders.getData();
+
+        // Suspend the remaining workers while calibration owns the snapshot.
         if (xTacTask) {
             vTaskSuspend(xTacTask);
         }

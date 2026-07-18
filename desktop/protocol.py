@@ -171,28 +171,45 @@ def parse_servo_angle_packet(payload: bytes) -> Optional[Tuple[List[int], List[i
 
 def parse_servo_telem_packet(
     payload: bytes,
-) -> Optional[Tuple[List[int], List[int], List[int], List[int], List[bool]]]:
-    if not payload or (len(payload) % 7) != 0:
+) -> Optional[Tuple[List[int], List[int], List[int], List[int], List[int], List[bool]]]:
+    if not payload:
         return None
 
-    channel_count = len(payload) // 7
+    if (len(payload) % 9) == 0:
+        stride = 9
+        has_current = True
+    elif (len(payload) % 7) == 0:
+        stride = 7
+        has_current = False
+    else:
+        return None
+
+    channel_count = len(payload) // stride
     if channel_count <= 0:
         return None
 
     speeds: List[int] = []
     loads: List[int] = []
+    currents: List[int] = []
     volts: List[int] = []
     temps: List[int] = []
     online: List[bool] = []
 
     for i in range(channel_count):
-        base = i * 7
+        base = i * stride
         speeds.append(struct.unpack(">h", payload[base:base + 2])[0])
         loads.append(struct.unpack(">h", payload[base + 2:base + 4])[0])
-        volts.append(payload[base + 4])
-        temps.append(payload[base + 5])
-        online.append(payload[base + 6] == 1)
-    return speeds, loads, volts, temps, online
+        if has_current:
+            currents.append(struct.unpack(">h", payload[base + 4:base + 6])[0])
+            volts.append(payload[base + 6])
+            temps.append(payload[base + 7])
+            online.append(payload[base + 8] == 1)
+        else:
+            currents.append(0)
+            volts.append(payload[base + 4])
+            temps.append(payload[base + 5])
+            online.append(payload[base + 6] == 1)
+    return speeds, loads, currents, volts, temps, online
 
 
 def parse_servo_raw_packet(payload: bytes) -> Optional[Tuple[List[int], List[bool]]]:

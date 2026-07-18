@@ -11,7 +11,7 @@
 
 HalEncoders &encoders = HalEncoders::getInstance();
 
-HalEncoders::HalEncoders() : _spi(nullptr) {
+HalEncoders::HalEncoders() : _spi(nullptr), _allZeroFrameStreak(0) {
     for (int i = 0; i < ENCODER_TOTAL_NUM; i++) {
         _fsmStates[i] = FSM_READ_ANGLE;
         _cmdPipeline[i] = AS5047P_REG_ANGLECOM;
@@ -21,6 +21,17 @@ HalEncoders::HalEncoders() : _spi(nullptr) {
 }
 
 void HalEncoders::begin() {
+#if ENC_HW_MODE == ENC_HW_MODE_151_MISO_MUX
+    Serial.println("[Encoders] HW mode: 151 MISO mux (D3..D7)");
+#else
+    Serial.println("[Encoders] HW mode: 138 CS demux (Y0..Y4)");
+#endif
+#if ENC_151_DIAG_MODE == ENC_151_DIAG_MODE_FULL
+    Serial.println("[Encoders] Diagnostics: FULL");
+#else
+    Serial.println("[Encoders] Diagnostics: SAFE");
+#endif
+
 #if ENC_HW_MODE == ENC_HW_MODE_151_MISO_MUX
     pinMode(PIN_ENC_CS, OUTPUT);
     digitalWrite(PIN_ENC_CS, HIGH);
@@ -191,7 +202,11 @@ void HalEncoders::decodeFrame(
     uint16_t issuedCmd,
     bool fullDiag
 ) {
-    if (rawVal == 0x0000 || rawVal == 0xFFFF) {
+    // 0x0000 is a valid AS5047P ANGLECOM response at the encoder wrap point.
+    // Treating it as a lost link makes a healthy encoder flicker invalid every
+    // time its raw angle crosses 0/16383. 0xFFFF remains an unmistakable
+    // all-high/error response and is still handled as a link failure.
+    if (rawVal == 0xFFFF) {
         markLinkLost(outData, encoderId);
         return;
     }
@@ -342,6 +357,28 @@ void HalEncoders::getData(EncoderData &outData) {
 #endif
 
         globalIdx += count;
+    }
+
+    bool allChannelsValidAndZero = true;
+    for (int i = 0; i < ENCODER_TOTAL_NUM; i++) {
+        if (outData.errorFlags[i] != 0 || outData.rawAngles[i] != 0) {
+            allChannelsValidAndZero = false;
+            break;
+        }
+    }
+
+    if (allChannelsValidAndZero) {
+        if (_allZeroFrameStreak < 0xFF) {
+            _allZeroFrameStreak++;
+        }
+        if (_allZeroFrameStreak >= ALL_ZERO_FRAME_LIMIT) {
+            for (int i = 0; i < ENCODER_TOTAL_NUM; i++) {
+                outData.errorFlags[i] = 1;
+                _latchedErrorCodes[i] = ERR_CODE_LINK_LOST;
+            }
+        }
+    } else {
+        _allZeroFrameStreak = 0;
     }
 
     memcpy(outData.latchedErrors, _latchedErrorCodes, sizeof(_latchedErrorCodes));

@@ -113,8 +113,8 @@ struct RemoteCommand {
 // ===========================================
 // [Encoder HW Compat] board compatibility
 // ===========================================
-// 138: CS demux topology (default)
-// 151: MISO mux topology (temporary board)
+// 138: CS demux topology (Nano ESP32 expansion board/default)
+// 151: MISO mux topology (optional compatibility mode)
 #define ENC_HW_MODE_138_CS_DEMUX 0
 #define ENC_HW_MODE_151_MISO_MUX 1
 
@@ -129,8 +129,8 @@ struct RemoteCommand {
 static constexpr uint8_t ENC_151_GROUP_CHANNEL_MAP[5] = {4,3, 5, 6, 7};
 
 // 151 diagnostics
-// SAFE: on-demand ERRFL only (default)
-// FULL: keep ANGLE->ERRFL->DIAAGC flow
+// SAFE: on-demand ERRFL only
+// FULL: keep ANGLE->ERRFL->DIAAGC flow (default)
 #define ENC_151_DIAG_MODE_SAFE 0
 #define ENC_151_DIAG_MODE_FULL 1
 

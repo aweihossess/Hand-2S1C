@@ -130,6 +130,7 @@ class MachineState:
 
     servo_speed: List[int] = field(default_factory=lambda: [0] * ENCODER_COUNT)
     servo_load: List[int] = field(default_factory=lambda: [0] * ENCODER_COUNT)
+    servo_current: List[int] = field(default_factory=lambda: [0] * ENCODER_COUNT)
     servo_voltage: List[int] = field(default_factory=lambda: [0] * ENCODER_COUNT)
     servo_temperature: List[int] = field(default_factory=lambda: [0] * ENCODER_COUNT)
     servo_telem_online: List[bool] = field(default_factory=lambda: [False] * ENCODER_COUNT)
@@ -225,18 +226,31 @@ def process_servo_angle_packet(payload: bytes) -> None:
 
 
 def process_servo_telem_packet(payload: bytes) -> None:
-    expected_len = ENCODER_COUNT * 7
-    if len(payload) != expected_len:
+    if len(payload) % 9 == 0:
+        stride = 9
+        has_current = True
+    elif len(payload) % 7 == 0:
+        stride = 7
+        has_current = False
+    else:
         return
 
+    count = min(len(payload) // stride, ENCODER_COUNT)
     with state.lock:
-        for i in range(ENCODER_COUNT):
-            base = i * 7
+        for i in range(count):
+            base = i * stride
             state.servo_speed[i] = struct.unpack(">h", payload[base:base + 2])[0]
             state.servo_load[i] = struct.unpack(">h", payload[base + 2:base + 4])[0]
-            state.servo_voltage[i] = payload[base + 4]
-            state.servo_temperature[i] = payload[base + 5]
-            state.servo_telem_online[i] = payload[base + 6] == 1
+            if has_current:
+                state.servo_current[i] = struct.unpack(">h", payload[base + 4:base + 6])[0]
+                state.servo_voltage[i] = payload[base + 6]
+                state.servo_temperature[i] = payload[base + 7]
+                state.servo_telem_online[i] = payload[base + 8] == 1
+            else:
+                state.servo_current[i] = 0
+                state.servo_voltage[i] = payload[base + 4]
+                state.servo_temperature[i] = payload[base + 5]
+                state.servo_telem_online[i] = payload[base + 6] == 1
 
         state.last_update = time.time()
 
@@ -360,6 +374,7 @@ def format_servo_cell(index: int, angle: int, online: bool) -> str:
 def format_telemetry_cell(index: int,
                           speed: int,
                           load: int,
+                          current: int,
                           voltage: int,
                           temperature: int,
                           online: bool) -> str:
@@ -368,7 +383,7 @@ def format_telemetry_cell(index: int,
 
     color = Fore.MAGENTA if index % 2 == 0 else Fore.CYAN
     v = voltage / 10.0
-    return f"[{index:02d}] {color}S:{speed:6d} L:{load:6d} V:{v:4.1f} T:{temperature:3d}{Style.RESET_ALL}"
+    return f"[{index:02d}] {color}S:{speed:6d} L:{load:6d} C:{current:6d} V:{v:4.1f} T:{temperature:3d}{Style.RESET_ALL}"
 
 
 def render_calib_status(calib_status: str, calib_timestamp: float) -> str:
@@ -477,6 +492,7 @@ def print_ui() -> None:
         servo_online = list(state.servo_online)
         servo_speed = list(state.servo_speed)
         servo_load = list(state.servo_load)
+        servo_current = list(state.servo_current)
         servo_voltage = list(state.servo_voltage)
         servo_temperature = list(state.servo_temperature)
         servo_telem_online = list(state.servo_telem_online)
@@ -539,7 +555,7 @@ def print_ui() -> None:
 
     print("-" * 88)
 
-    print(f"{Style.BRIGHT}Servo telemetry (speed/load/voltage/temp):{Style.RESET_ALL}")
+    print(f"{Style.BRIGHT}Servo telemetry (speed/load/current/voltage/temp):{Style.RESET_ALL}")
     for row in range(rows):
         cells = []
         for col in range(3):
@@ -550,6 +566,7 @@ def print_ui() -> None:
                         idx,
                         servo_speed[idx],
                         servo_load[idx],
+                        servo_current[idx],
                         servo_voltage[idx],
                         servo_temperature[idx],
                         servo_telem_online[idx],
