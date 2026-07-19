@@ -1265,6 +1265,36 @@ static bool handleTextCommandLine(TaskSharedData_t* sharedData, const uint8_t* l
         Serial.printf("<<<MCP_ANGLE_KI scale=%.6f>>>\r\n", (double)scale);
         return true;
     }
+    if (textEquals(cmd, "rblend")) {
+        Serial.printf("<<<MCP_R_BLEND value=%.4f>>>\r\n",
+                      (double)sharedData->mcp_feedforward_r_blend);
+        return true;
+    }
+    if (strncmp(cmd, "rblend ", 7) == 0) {
+        float blend = 0.0f;
+        if (!parseTextFloat(cmd + 7, &blend, NULL) || !isfinite(blend) || blend < 0.0f || blend > 1.0f) {
+            Serial.println("<<<MCP_R_BLEND bad_value range=0..1>>>");
+            return true;
+        }
+        sharedData->mcp_feedforward_r_blend = blend;
+        Serial.printf("<<<MCP_R_BLEND value=%.4f>>>\r\n", (double)blend);
+        return true;
+    }
+    if (textEquals(cmd, "pblend")) {
+        Serial.printf("<<<MCP_P_BLEND value=%.4f>>>\r\n",
+                      (double)sharedData->mcp_feedback_p_blend);
+        return true;
+    }
+    if (strncmp(cmd, "pblend ", 7) == 0) {
+        float blend = 0.0f;
+        if (!parseTextFloat(cmd + 7, &blend, NULL) || !isfinite(blend) || blend < 0.0f || blend > 1.0f) {
+            Serial.println("<<<MCP_P_BLEND bad_value range=0..1>>>");
+            return true;
+        }
+        sharedData->mcp_feedback_p_blend = blend;
+        Serial.printf("<<<MCP_P_BLEND value=%.4f>>>\r\n", (double)blend);
+        return true;
+    }
     if (textEquals(cmd, "tension") || textEquals(cmd, "bias")) {
         Serial.printf("<<<TENSION_BIAS enabled=%u host M00=%ld M01=%ld M02=%ld M03=%ld M04=%ld>>>\r\n",
                       (unsigned)sharedData->mcp_tension_bias_enabled,

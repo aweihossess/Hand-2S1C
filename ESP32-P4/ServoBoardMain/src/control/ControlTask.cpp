@@ -619,6 +619,8 @@ void controlTask(void* parameter)
                 sharedData->mcp_tendon_feedforward_enabled != 0);
             g_controlSolver.setMcpAngleKpScale(sharedData->mcp_angle_kp_scale);
             g_controlSolver.setMcpAngleKiScale(sharedData->mcp_angle_ki_scale);
+            g_controlSolver.setMcpFeedforwardRBlend(sharedData->mcp_feedforward_r_blend);
+            g_controlSolver.setMcpFeedbackPBlend(sharedData->mcp_feedback_p_blend);
             jointSolverOk = g_controlSolver.computeTendonFeedforward(
                 localTargets,
                 magAngles,

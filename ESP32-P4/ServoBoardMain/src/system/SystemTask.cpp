@@ -99,8 +99,10 @@ void System_Init() {
         sharedData.tendon_guard_sign[i] = 1;
     }
     sharedData.mcp_tendon_feedforward_enabled = 1;
-    sharedData.mcp_angle_kp_scale = 0.10f;
-    sharedData.mcp_angle_ki_scale = 0.005f;
+    sharedData.mcp_angle_kp_scale = 0.70f;
+    sharedData.mcp_angle_ki_scale = 0.02f;
+    sharedData.mcp_feedforward_r_blend = 0.0f;
+    sharedData.mcp_feedback_p_blend = 0.0f;
     sharedData.mcp_tension_bias_enabled = 0;
     memset((void*)sharedData.mcp_tension_bias_host_counts, 0, sizeof(sharedData.mcp_tension_bias_host_counts));
     sharedData.calib_zero_raw_valid = 0;

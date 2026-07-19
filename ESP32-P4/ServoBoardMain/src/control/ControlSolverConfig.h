@@ -40,6 +40,19 @@ static const float kFittedMcpR[5][4] = {
     { 0.0000f, -3.8985f, -4.3955f, -3.3443f}
 };
 
+// Local inverse map identified at q ~= [10, 10, 20, 10] deg on 2026-07-19.
+// Four independent +/-5 deg joint steps were used.  Endpoint motor and joint
+// deltas were fitted with the physical tendon sparsity pattern and a small
+// ridge toward kFittedMcpR.  It is an experimental candidate, not a new
+// default: runtime rblend/pblend are both initialized to zero.
+static const float kLocalIdentifiedMcpMap[5][4] = {
+    { 3.7902f,  4.2846f,  0.0000f,  0.0000f},
+    {-2.7764f,  4.3217f,  0.0000f,  0.0000f},
+    {-1.8163f, -3.3031f,  5.9482f,  0.0000f},
+    { 2.3439f, -1.9732f,  0.0000f,  4.7259f},
+    { 0.0000f, -3.4184f, -6.1187f, -4.0970f}
+};
+
 // Orthogonal task-space projector Q = R * pinv(R), evaluated from the fitted
 // matrix above.  Q keeps only actuator displacements that can be produced by
 // the four joint coordinates.  The one-dimensional internal-tension motion
@@ -76,16 +89,16 @@ static const float kMcpAnglePBase[5][4] = {
     { 0.0f, -6.2f, -6.0f, -6.2f}
 };
 
-// Safe initial value.  It can be changed online with "kp <value>" without
-// rebuilding the firmware.  Start low and increase after small-angle tests.
-static const float kDefaultMcpAngleKpScale = 0.10f;
+// Tuned on 2026-07-19 with step and sine tests at three safe local poses.
+// It can still be changed online with "kp <value>" without rebuilding.
+static const float kDefaultMcpAngleKpScale = 0.70f;
 
 // Ki is in 1/s.  Integration starts only after the finite-step reference has
 // reached the requested target.  Errors inside the deadband are not
 // integrated.  There is intentionally no separate I-state or I-output limit;
 // the combined projected PI vector is uniformly scaled when any one channel
 // reaches the actuator-output boundary.  Uniform scaling preserves range(R).
-static const float kDefaultMcpAngleKiScale = 0.005f;
+static const float kDefaultMcpAngleKiScale = 0.02f;
 static const float kMcpAngleIntegralDeadbandDeg = 0.20f;
 
 static const float kMcpAngleFeedbackLimitCounts[5] = {

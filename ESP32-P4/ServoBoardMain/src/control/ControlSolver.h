@@ -55,6 +55,10 @@ public:
     float getMcpAngleKpScale() const;
     void setMcpAngleKiScale(float scale);
     float getMcpAngleKiScale() const;
+    void setMcpFeedforwardRBlend(float blend);
+    float getMcpFeedforwardRBlend() const;
+    void setMcpFeedbackPBlend(float blend);
+    float getMcpFeedbackPBlend() const;
     void resetAngleIntegral();
     void resetAll();
 
@@ -111,6 +115,8 @@ private:
     bool _tendonLengthFeedforwardEnabled;
     float _mcpAngleKpScale;
     float _mcpAngleKiScale;
+    float _mcpFeedforwardRBlend;
+    float _mcpFeedbackPBlend;
     PID_Info_TypeDef _pids[JOINT_COUNT][2];
     bool _initialized;
 };

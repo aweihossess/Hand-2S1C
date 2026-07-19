@@ -2549,8 +2549,8 @@ class EncoderServoWindow(tk.Toplevel):
         self.mode_var = tk.StringVar(value="degree")
         self.target_index_var = tk.IntVar(value=0)
         self.target_value_var = tk.StringVar(value="0")
-        self.angle_kp_scale_var = tk.StringVar(value="0.50")
-        self.angle_ki_scale_var = tk.StringVar(value="0.15")
+        self.angle_kp_scale_var = tk.StringVar(value="0.70")
+        self.angle_ki_scale_var = tk.StringVar(value="0.02")
         host_record_path_var = getattr(self.master, "continuous_record_path_var", None)
         self.feedback_record_path_var = (
             host_record_path_var
@@ -3418,7 +3418,7 @@ class EncoderServoWindow(tk.Toplevel):
             if show_error:
                 messagebox.showwarning(
                     "Kp 参数无效",
-                    "P 增益 Kp 必须在 0～5 之间。当前启动默认值为 0.50。",
+                    "P 增益 Kp 必须在 0～5 之间。当前启动默认值为 0.70。",
                     parent=self,
                 )
             return None
@@ -3443,7 +3443,7 @@ class EncoderServoWindow(tk.Toplevel):
             if show_error:
                 messagebox.showwarning(
                     "Ki 参数无效",
-                    "I 增益 Ki 必须在 0～1 (1/s) 之间。当前启动默认值为 0.15。",
+                    "I 增益 Ki 必须在 0～1 (1/s) 之间。当前启动默认值为 0.02。",
                     parent=self,
                 )
             return None

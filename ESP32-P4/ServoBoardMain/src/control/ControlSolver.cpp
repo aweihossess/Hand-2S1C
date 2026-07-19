@@ -46,6 +46,8 @@ ControlSolver::ControlSolver() :
     _tendonLengthFeedforwardEnabled(kDefaultEnableTendonLengthFeedforward),
     _mcpAngleKpScale(kDefaultMcpAngleKpScale),
     _mcpAngleKiScale(kDefaultMcpAngleKiScale),
+    _mcpFeedforwardRBlend(0.0f),
+    _mcpFeedbackPBlend(0.0f),
     _initialized(false)
 {
     memset(_zeroOffsets, 0, sizeof(_zeroOffsets));
@@ -340,9 +342,14 @@ void ControlSolver::prepareProjectedMcpTaskCounts()
                 const float referenceDeltaDeg =
                     _qRef[jointIndex] - _qEntry[jointIndex];
                 const float referenceDeltaRad = referenceDeltaDeg * kDegToRad;
+                const float rElement =
+                    (1.0f - _mcpFeedforwardRBlend) *
+                        kFittedMcpR[sourceTendon][jointIndex] +
+                    _mcpFeedforwardRBlend *
+                        kLocalIdentifiedMcpMap[sourceTendon][jointIndex];
                 rawFeedforwardCounts[sourceTendon] +=
                     kMcpCountsPerMm *
-                    kFittedMcpR[sourceTendon][jointIndex] *
+                    rElement *
                     referenceDeltaRad;
             }
         }
@@ -352,10 +359,15 @@ void ControlSolver::prepareProjectedMcpTaskCounts()
              jointIndex++) {
             const float errorDeg = _qRef[jointIndex] - _qFbFiltered[jointIndex];
             const float errorRad = errorDeg * kDegToRad;
+            const float pElement =
+                (1.0f - _mcpFeedbackPBlend) *
+                    kMcpAnglePBase[sourceTendon][jointIndex] +
+                _mcpFeedbackPBlend *
+                    kLocalIdentifiedMcpMap[sourceTendon][jointIndex];
             rawAnglePCounts[sourceTendon] +=
                 kMcpCountsPerMm *
                 _mcpAngleKpScale *
-                kMcpAnglePBase[sourceTendon][jointIndex] *
+                pElement *
                 errorRad;
 
             const float integralRadSec =
@@ -363,7 +375,7 @@ void ControlSolver::prepareProjectedMcpTaskCounts()
             rawAngleICounts[sourceTendon] +=
                 kMcpCountsPerMm *
                 _mcpAngleKiScale *
-                kMcpAnglePBase[sourceTendon][jointIndex] *
+                pElement *
                 integralRadSec;
         }
     }
@@ -504,6 +516,28 @@ void ControlSolver::setMcpAngleKiScale(float scale)
 float ControlSolver::getMcpAngleKiScale() const
 {
     return _mcpAngleKiScale;
+}
+
+void ControlSolver::setMcpFeedforwardRBlend(float blend)
+{
+    if (!isfinite(blend)) return;
+    _mcpFeedforwardRBlend = clampFloat(blend, 0.0f, 1.0f);
+}
+
+float ControlSolver::getMcpFeedforwardRBlend() const
+{
+    return _mcpFeedforwardRBlend;
+}
+
+void ControlSolver::setMcpFeedbackPBlend(float blend)
+{
+    if (!isfinite(blend)) return;
+    _mcpFeedbackPBlend = clampFloat(blend, 0.0f, 1.0f);
+}
+
+float ControlSolver::getMcpFeedbackPBlend() const
+{
+    return _mcpFeedbackPBlend;
 }
 
 void ControlSolver::resetAngleIntegral()

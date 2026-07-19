@@ -334,6 +334,8 @@ typedef struct {
     volatile uint8_t mcp_tendon_feedforward_enabled;
     volatile float mcp_angle_kp_scale;
     volatile float mcp_angle_ki_scale;
+    volatile float mcp_feedforward_r_blend;
+    volatile float mcp_feedback_p_blend;
     volatile uint8_t mcp_tension_bias_enabled;
     volatile int32_t mcp_tension_bias_host_counts[SERVO_TOTAL_NUM];
 
