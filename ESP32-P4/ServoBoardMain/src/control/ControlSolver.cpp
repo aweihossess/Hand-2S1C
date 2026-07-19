@@ -46,8 +46,8 @@ ControlSolver::ControlSolver() :
     _tendonLengthFeedforwardEnabled(kDefaultEnableTendonLengthFeedforward),
     _mcpAngleKpScale(kDefaultMcpAngleKpScale),
     _mcpAngleKiScale(kDefaultMcpAngleKiScale),
-    _mcpFeedforwardRBlend(0.0f),
-    _mcpFeedbackPBlend(0.0f),
+    _mcpFeedforwardRBlend(kDefaultMcpFeedforwardRBlend),
+    _mcpFeedbackPBlend(kDefaultMcpFeedbackPBlend),
     _initialized(false)
 {
     memset(_zeroOffsets, 0, sizeof(_zeroOffsets));

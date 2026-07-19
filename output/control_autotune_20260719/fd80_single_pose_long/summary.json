@@ -1,0 +1,29 @@
+{
+  "finite_difference_counts": 80,
+  "pose_deg": [
+    0.0,
+    32.0,
+    35.0,
+    52.0
+  ],
+  "step_csv": "run_data\\direct_autotune\\fd80_single_pose_20260719\\combined_step_long_fd80.csv",
+  "valid_sine_joints": [
+    0,
+    1
+  ],
+  "invalid_sine_joints": [
+    2
+  ],
+  "not_run_sine_joints": [
+    3
+  ],
+  "blocking_fault": "CH1/M01 force sensor became nonphysical positive (+130 to +275 N)",
+  "max_abs_cmd_minus_now_counts": 80,
+  "step_peak_tension_n": 31.4,
+  "artifacts": [
+    "fd80_long_step_response.png",
+    "fd80_ten_cycle_sine_valid_j0_j1.png",
+    "fd80_j2_force_sensor_fault.png",
+    "metrics.csv"
+  ]
+}

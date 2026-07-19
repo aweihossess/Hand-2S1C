@@ -43,8 +43,8 @@ static const float kFittedMcpR[5][4] = {
 // Local inverse map identified at q ~= [10, 10, 20, 10] deg on 2026-07-19.
 // Four independent +/-5 deg joint steps were used.  Endpoint motor and joint
 // deltas were fitted with the physical tendon sparsity pattern and a small
-// ridge toward kFittedMcpR.  It is an experimental candidate, not a new
-// default: runtime rblend/pblend are both initialized to zero.
+// ridge toward kFittedMcpR.  The final validated configuration keeps the
+// broad-pose R feedforward and blends 25% of this local map into P feedback.
 static const float kLocalIdentifiedMcpMap[5][4] = {
     { 3.7902f,  4.2846f,  0.0000f,  0.0000f},
     {-2.7764f,  4.3217f,  0.0000f,  0.0000f},
@@ -100,12 +100,16 @@ static const float kDefaultMcpAngleKpScale = 0.70f;
 // reaches the actuator-output boundary.  Uniform scaling preserves range(R).
 static const float kDefaultMcpAngleKiScale = 0.02f;
 static const float kMcpAngleIntegralDeadbandDeg = 0.20f;
+static const float kDefaultMcpFeedforwardRBlend = 0.0f;
+static const float kDefaultMcpFeedbackPBlend = 0.25f;
 
 static const float kMcpAngleFeedbackLimitCounts[5] = {
     2000.0f, 2000.0f, 2000.0f, 2000.0f, 2000.0f
 };
 
-// Motor position loop. Output is a per-cycle Motor Abs step.
+// Motor position loop. Output is a per-cycle Motor Abs step.  Keep the five
+// MCP tendon channels aligned with kMcpCommandMaxStepCounts in ControlTask so
+// this inner limit does not silently dominate the requested finite difference.
 static const float kTendonMotorKp[JOINT_COUNT] = {
     1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
     1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
@@ -119,7 +123,7 @@ static const float kTendonMotorKd[JOINT_COUNT] = {
 };
 
 static const float kTendonMotorOutputLimit[JOINT_COUNT] = {
-    20.0f, 20.0f, 20.0f, 20.0f, 20.0f, 4096.0f, 4096.0f,
+    80.0f, 80.0f, 80.0f, 80.0f, 80.0f, 4096.0f, 4096.0f,
     4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f,
     4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f, 4096.0f
 };

@@ -30,15 +30,16 @@ if str(ROOT) not in sys.path:
 from tools.control_validation.run_direct_pi_search import fit_sine, settling_time, stop_controller, wrap_pi
 
 
-# These leave a one-degree margin to the runner's target limits while keeping
-# J01 >= 2 deg even under the -5 deg excitation.
+# Broad 3x3x3 coverage inside the runner's safety envelope.  Every coordinate
+# leaves exactly 5 deg for the default +/-5 deg step/sine excitation, while
+# J01 remains strictly positive throughout the experiment.
 POSES = tuple(
     (j0, j1, j2, j3)
-    for j0 in (-9.0, 0.0, 9.0)
-    for j2 in (6.0, 30.0, 54.0)
-    for j3 in (-39.0, 0.0, 39.0)
-    for j1 in ((7.0, 15.0, 23.0)[
-        (int((j0 + 9.0) / 9.0) + int(j2 / 24.0) + int((j3 + 39.0) / 39.0)) % 3
+    for j0 in (-55.0, 0.0, 55.0)
+    for j2 in (5.0, 25.0, 45.0)
+    for j3 in (-5.0, 45.0, 95.0)
+    for j1 in ((6.0, 30.0, 55.0)[
+        (int((j0 + 55.0) / 55.0) + int((j2 - 5.0) / 20.0) + int((j3 + 5.0) / 50.0)) % 3
     ],)
 )
 
@@ -290,7 +291,7 @@ def main() -> int:
     parser.add_argument("--ki", type=float, default=0.02)
     parser.add_argument("--r-blend", type=float, default=0.0)
     parser.add_argument("--p-blend", type=float, default=0.25)
-    parser.add_argument("--abort-tension-n", type=float, default=70.0)
+    parser.add_argument("--abort-tension-n", type=float, default=80.0)
     parser.add_argument(
         "--poses",
         type=parse_poses,

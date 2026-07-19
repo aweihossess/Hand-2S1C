@@ -737,18 +737,11 @@ static bool parseTextMcpAnglePairCommand(const char* cmd, float* j00Out, float* 
 
 static float clampTextJointTargetDeg(float targetDeg, uint8_t joint, bool* clamped)
 {
-    float minDeg = 0.0f;
-    float maxDeg = 0.0f;
-    bool hasLimit = true;
-    if (joint == 0) {
-        minDeg = -20.0f;
-        maxDeg = 30.0f;
-    } else if (joint == 1) {
-        minDeg = 0.0f;
-        maxDeg = 90.0f;
-    } else {
-        hasLimit = false;
-    }
+    static const float kTextJointMinDeg[4] = {-60.0f, 0.0f, 0.0f, -10.0f};
+    static const float kTextJointMaxDeg[4] = {60.0f, 60.0f, 50.0f, 100.0f};
+    const bool hasLimit = joint < 4;
+    const float minDeg = hasLimit ? kTextJointMinDeg[joint] : 0.0f;
+    const float maxDeg = hasLimit ? kTextJointMaxDeg[joint] : 0.0f;
 
     if (clamped) {
         *clamped = false;

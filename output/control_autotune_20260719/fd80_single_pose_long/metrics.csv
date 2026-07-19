@@ -1,0 +1,8 @@
+﻿test,joint,valid,rmse_deg,steady_error_deg,settling_1deg_s,effective_overshoot_deg,amplitude_ratio,phase_lag_deg,phase_lag_s,peak_tension_n,note
+long_joint_step,0,True,1.4157937594272219,0.6475000000000001,3.398468499999999,0.029999999999999805,,,,31.4,30 s positive and negative platforms
+long_joint_step,1,True,1.2450945576361883,0.21750000000000008,3.201785499999999,0.09499999999999886,,,,31.4,30 s positive and negative platforms
+long_joint_step,2,True,2.0718497766954975,1.3690000000000004,29.902729,0.0,,,,31.4,30 s positive and negative platforms
+long_joint_step,3,True,2.462976421290495,2.3785,15.856224500000001,1.5800000000000018,,,,31.4,30 s positive and negative platforms
+sine_0.10hz_10cycles,0,True,0.9912329712232135,,,,1.0443840693525908,11.798953772798288,0.3277487159110635,19.4,force sensors valid
+sine_0.10hz_10cycles,1,True,0.9639100934432413,,,,0.9755864046818242,12.357845436538227,0.3432734843482841,22.6,force sensors valid
+sine_0.10hz_10cycles,2,False,2.165340862612628,,,,0.5668282310949037,30.243162976632913,0.8400878604620253,28.1,angle-only; CH1/M01 force sensor invalid (+130 to +275 N)

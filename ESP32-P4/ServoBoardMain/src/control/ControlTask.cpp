@@ -29,7 +29,7 @@ static const float kMagCountLpfAlpha = 0.25f;
 static const int32_t kJointZeroHomingToleranceCounts = 40;
 static const uint8_t kJointZeroHomingStableCycles = 20;
 static const int32_t kJointCommandMaxStepCounts = 200;
-static const int32_t kMcpCommandMaxStepCounts = 320;
+static const int32_t kMcpCommandMaxStepCounts = 80;
 static const float kJointMaxTrackErrorDeg = 30.0f;
 static const uint16_t kJointTargetSpeed = SERVO_TARGET_SPEED_PERFORMANCE;
 static const uint8_t kJointTargetAcc = SERVO_TARGET_ACC_PERFORMANCE;
@@ -39,6 +39,7 @@ static const uint32_t kJointControlDiagIntervalMs = 100;
 static const uint32_t kJointDebugIntervalMs = 50;
 static const bool kEnableReleaseGuard = false;
 static const uint8_t kMcpControlledMotorCount = 5;
+static const uint8_t kMcpControlledJointCount = 4;
 static const int8_t kMcpTensionDirection[kMcpControlledMotorCount] = {
     1, 1, 1, 1, 1
 };
@@ -47,11 +48,13 @@ static const uint8_t kMcpFeJointIndex = 1;
 static const uint8_t kPipFeJointIndex = 2;
 static const uint8_t kDipFeJointIndex = 3;
 static const uint8_t kMcpReturnMotorJointMapIndex = 4;
-static const float kMcpFeMinDeg = -20.0f;
-static const float kMcpFeMaxDeg = 80.0f;
-static const float kMcpAaMinDeg = -20.0f;
-static const float kMcpAaMaxDeg = 30.0f;
-static const float kMcpEncoderSafetyMarginDeg = 0.5f;
+static const float kMcpJointMinDeg[kMcpControlledJointCount] = {
+    -60.0f, 0.0f, 0.0f, -10.0f
+};
+static const float kMcpJointMaxDeg[kMcpControlledJointCount] = {
+    60.0f, 60.0f, 50.0f, 100.0f
+};
+static const float kMcpEncoderSafetyMarginDeg = 0.0f;
 
 static float clampFloatRange(float value, float minValue, float maxValue)
 {
@@ -133,11 +136,11 @@ static float clampJointTargetDegByCalib(float targetDeg, uint8_t jointIndex)
 {
     if (!isfinite(targetDeg)) targetDeg = 0.0f;
     if (jointIndex >= ENCODER_TOTAL_NUM) return 0.0f;
-    if (jointIndex == kMcpFeJointIndex) {
-        return clampFloatRange(targetDeg, kMcpFeMinDeg, kMcpFeMaxDeg);
-    }
-    if (jointIndex == kMcpAaJointIndex) {
-        return clampFloatRange(targetDeg, kMcpAaMinDeg, kMcpAaMaxDeg);
+    if (jointIndex < kMcpControlledJointCount) {
+        return clampFloatRange(
+            targetDeg,
+            kMcpJointMinDeg[jointIndex],
+            kMcpJointMaxDeg[jointIndex]);
     }
 
     float maxDeg = 0.0f;
@@ -160,13 +163,9 @@ static bool isMcpJointEncoderOutOfRange(uint8_t jointIndex, float actualDeg)
     if (!isfinite(actualDeg)) {
         return true;
     }
-    if (jointIndex == kMcpFeJointIndex) {
-        return actualDeg < (kMcpFeMinDeg - kMcpEncoderSafetyMarginDeg) ||
-               actualDeg > (kMcpFeMaxDeg + kMcpEncoderSafetyMarginDeg);
-    }
-    if (jointIndex == kMcpAaJointIndex) {
-        return actualDeg < (kMcpAaMinDeg - kMcpEncoderSafetyMarginDeg) ||
-               actualDeg > (kMcpAaMaxDeg + kMcpEncoderSafetyMarginDeg);
+    if (jointIndex < kMcpControlledJointCount) {
+        return actualDeg < (kMcpJointMinDeg[jointIndex] - kMcpEncoderSafetyMarginDeg) ||
+               actualDeg > (kMcpJointMaxDeg[jointIndex] + kMcpEncoderSafetyMarginDeg);
     }
     return false;
 }
@@ -932,7 +931,7 @@ void controlTask(void* parameter)
                             }
                             // ControlSolver already includes the signed tension
                             // bias in its absolute requested target and applies
-                            // the 20-count finite-difference limit.  Do not add
+                            // the 80-count finite-difference limit.  Do not add
                             // the bias again here.
                             const int32_t preLimitTarget = (int32_t)outPulses[tendonIndex];
                             jointPreLimitTarget[tendonIndex] = clampMappedCountForProtocol(preLimitTarget);

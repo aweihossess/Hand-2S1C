@@ -2,6 +2,7 @@
 #include "../calibration/CalibrationTask.h"
 #include "StateMachineTask.h"
 #include "../control/ControlTask.h"
+#include "../control/ControlSolverConfig.h"
 #include "../communication/servo/ServoCommunicationTask.h"
 #include "../hardware/HardwareMap.h"
 
@@ -99,10 +100,10 @@ void System_Init() {
         sharedData.tendon_guard_sign[i] = 1;
     }
     sharedData.mcp_tendon_feedforward_enabled = 1;
-    sharedData.mcp_angle_kp_scale = 0.70f;
-    sharedData.mcp_angle_ki_scale = 0.02f;
-    sharedData.mcp_feedforward_r_blend = 0.0f;
-    sharedData.mcp_feedback_p_blend = 0.0f;
+    sharedData.mcp_angle_kp_scale = kDefaultMcpAngleKpScale;
+    sharedData.mcp_angle_ki_scale = kDefaultMcpAngleKiScale;
+    sharedData.mcp_feedforward_r_blend = kDefaultMcpFeedforwardRBlend;
+    sharedData.mcp_feedback_p_blend = kDefaultMcpFeedbackPBlend;
     sharedData.mcp_tension_bias_enabled = 0;
     memset((void*)sharedData.mcp_tension_bias_host_counts, 0, sizeof(sharedData.mcp_tension_bias_host_counts));
     sharedData.calib_zero_raw_valid = 0;

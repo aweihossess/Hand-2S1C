@@ -42,12 +42,10 @@ from desktop.force_sensor_monitor import (
 
 
 INITIAL_TARGETS = (10.0, 10.0, 20.0, 10.0)
-JOINT_LIMITS_DEG = ((-15.0, 15.0), (0.0, 30.0), (0.0, 60.0), (-45.0, 45.0))
-# Commanded targets keep the exact experiment envelope above.  Measured
-# angles get a one-degree guard margin because encoder quantization and normal
-# closed-loop overshoot can put a 15.00-deg command at 15.01 deg.  J01 keeps
-# its strict positive lower bound as required by the experiment protocol.
-ACTUAL_GUARD_LIMITS_DEG = ((-16.0, 16.0), (0.0, 31.0), (-1.0, 61.0), (-46.0, 46.0))
+JOINT_LIMITS_DEG = ((-60.0, 60.0), (0.0, 60.0), (0.0, 50.0), (-10.0, 100.0))
+# Measured-angle aborts use the same mechanical safety envelope as commanded
+# targets.  J01 still keeps its strict-positive experiment requirement below.
+ACTUAL_GUARD_LIMITS_DEG = JOINT_LIMITS_DEG
 CTRL_RE = re.compile(r"\[MCP5 CTRL\]\s+(.*)")
 JOINT_RE = re.compile(r"J(\d\d) target=([-0-9.]+) actual=([-0-9.]+)")
 MOTOR_RE = re.compile(
@@ -218,6 +216,9 @@ def output_fields() -> list[str]:
         "nullspace_alpha_counts",
         "nullspace_alpha_measured_n",
         "nullspace_alpha_desired_n",
+        "nullspace_alpha_min_n",
+        "nullspace_alpha_max_n",
+        "nullspace_feasible",
     ]
     for channel in DISPLAY_CHANNELS:
         fields += [f"force_ch{channel}_raw", f"force_ch{channel}_n"]
@@ -252,12 +253,18 @@ def main() -> int:
     )
     parser.add_argument("--step-hold-s", type=float, default=6.0)
     parser.add_argument("--center-hold-s", type=float, default=4.0)
-    parser.add_argument("--kp", type=float, default=1.0)
-    parser.add_argument("--ki", type=float, default=0.3)
+    parser.add_argument("--kp", type=float, default=0.70)
+    parser.add_argument("--ki", type=float, default=0.02)
     parser.add_argument("--r-blend", type=float, default=0.0)
-    parser.add_argument("--p-blend", type=float, default=0.0)
-    parser.add_argument("--abort-tension-n", type=float, default=40.0)
+    parser.add_argument("--p-blend", type=float, default=0.25)
+    parser.add_argument("--abort-tension-n", type=float, default=80.0)
+    parser.add_argument("--min-tension-n", type=float, default=5.0)
     parser.add_argument("--startup-grace-s", type=float, default=1.5)
+    parser.add_argument(
+        "--skip-angle-guard",
+        action="store_true",
+        help="Disable measured-angle aborts; force and feedback-freshness guards remain active.",
+    )
     parser.add_argument("--output")
     args = parser.parse_args()
     if args.output is None:
@@ -317,10 +324,14 @@ def main() -> int:
     alpha_counts = 0.0
     alpha_measured_n = 0.0
     alpha_desired_n = 0.0
+    alpha_min_n = 0.0
+    alpha_max_n = 0.0
+    nullspace_feasible = True
     biases = {motor: 0 for motor in range(5)}
     latest_actual = [math.nan] * 4
     latest_actual_ts = 0.0
     last_biases = dict(biases)
+    loose_since = {motor: None for motor in range(5)}
 
     try:
         servo = open_serial_port(args.servo_port, args.servo_baud, timeout_s=0.01)
@@ -375,10 +386,31 @@ def main() -> int:
                     peak_tension = max(-value for value in force_by_motor.values())
                     if force_age > 0.5:
                         raise RuntimeError(f"force data stale: {force_age:.3f}s")
-                    if peak_tension >= args.abort_tension_n:
+                    if peak_tension > args.abort_tension_n:
                         raise RuntimeError(
-                            f"tension guard: {peak_tension:.1f}N >= {args.abort_tension_n:.1f}N"
+                            f"tension guard: {peak_tension:.1f}N > {args.abort_tension_n:.1f}N"
                         )
+                    # Positive sensor force or a value above -min_tension means
+                    # that the corresponding tendon is slack or its signal is
+                    # invalid.  Require persistence to reject a single noisy
+                    # sample, but never run a long test without all five valid
+                    # tension channels.
+                    for motor, force_n in force_by_motor.items():
+                        tension_n = -force_n
+                        if tension_n < args.min_tension_n:
+                            if loose_since[motor] is None:
+                                loose_since[motor] = now_mono
+                            elif (
+                                now_mono - schedule_start >= args.startup_grace_s
+                                and now_mono - loose_since[motor] >= 0.5
+                            ):
+                                raise RuntimeError(
+                                    f"loose/invalid tension M{motor:02d}: "
+                                    f"sensor={force_n:.1f}N, tension={tension_n:.1f}N "
+                                    f"< {args.min_tension_n:.1f}N"
+                                )
+                        else:
+                            loose_since[motor] = None
                     if latest_actual_ts and time.time() - latest_actual_ts > 0.8:
                         raise RuntimeError("joint feedback stale for more than 0.8s")
                     if not latest_actual_ts and now_mono - schedule_start > 1.0:
@@ -387,7 +419,7 @@ def main() -> int:
                     # from the previously active target.  Give the freshly
                     # sent binary target 1.5 s to take ownership before the
                     # experiment-range guard is enforced.
-                    if now_mono - schedule_start >= args.startup_grace_s:
+                    if not args.skip_angle_guard and now_mono - schedule_start >= args.startup_grace_s:
                         limits = ACTUAL_GUARD_LIMITS_DEG
                         for joint, (lower, upper) in enumerate(limits):
                             if math.isfinite(latest_actual[joint]) and not lower <= latest_actual[joint] <= upper:
@@ -397,13 +429,20 @@ def main() -> int:
 
                     if now_mono >= next_nullspace:
                         allocation = allocate_nullspace_internal_tension(force_by_motor)
-                        if not allocation.feasible:
-                            raise RuntimeError(
-                                f"nullspace tension allocation infeasible: "
-                                f"alpha_min={allocation.alpha_min_n:.2f} > alpha_max={allocation.alpha_max_n:.2f}"
-                            )
                         alpha_measured_n = allocation.alpha_measured_n
-                        alpha_desired_n = allocation.alpha_desired_n
+                        alpha_min_n = allocation.alpha_min_n
+                        alpha_max_n = allocation.alpha_max_n
+                        nullspace_feasible = allocation.feasible
+                        # An empty alpha interval is a task/allocation conflict,
+                        # not evidence of an unsafe measured tension.  During a
+                        # guarded validation run, keep the existing bias instead
+                        # of replacing the real force guards with this numerical
+                        # feasibility test.  The conflict remains visible in CSV.
+                        alpha_desired_n = (
+                            allocation.alpha_desired_n
+                            if allocation.feasible
+                            else allocation.alpha_measured_n
+                        )
                         alpha_counts = max(
                             0.0,
                             min(
@@ -481,6 +520,9 @@ def main() -> int:
                                     "nullspace_alpha_counts": f"{alpha_counts:.3f}",
                                     "nullspace_alpha_measured_n": f"{alpha_measured_n:.4f}",
                                     "nullspace_alpha_desired_n": f"{alpha_desired_n:.4f}",
+                                    "nullspace_alpha_min_n": f"{alpha_min_n:.4f}",
+                                    "nullspace_alpha_max_n": f"{alpha_max_n:.4f}",
+                                    "nullspace_feasible": int(nullspace_feasible),
                                 }
                             )
                             for channel in DISPLAY_CHANNELS:

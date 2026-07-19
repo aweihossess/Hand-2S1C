@@ -115,7 +115,7 @@ FORCE_ZERO_CAPTURE_SECONDS = 2.0
 FORCE_ZERO_MIN_SAMPLES_PER_CHANNEL = 8
 FORCE_ZERO_MAX_SPAN_UNITS = 20
 ENCODER_ZERO_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "encoder_zero.json"
-TRAINING_DEFAULT_JOINT_RANGES = "J0:-15:15,J1:0:30,J2:0:60,J3:-45:45"
+TRAINING_DEFAULT_JOINT_RANGES = "J0:-60:60,J1:0:60,J2:0:50,J3:-10:100"
 TRAINING_DEFAULT_SAMPLE_INTERVAL_MS = 200
 TRAINING_DEFAULT_TARGET_PERIOD_S = 5.0
 TRAINING_DEFAULT_LOAD_LIMIT = ""
@@ -124,15 +124,15 @@ MANUAL_RECORD_STALE_LIMIT_S = 1.5
 MANUAL_RECORD_JOINTS = tuple(range(4))
 CONTINUOUS_RECORD_DEFAULT_INTERVAL_MS = 100
 STEP_TEST_DEFAULT_POSES = (
-    "-5;11;10;-35|-5;15;10;0|-5;20;10;35|"
-    "-5;15;30;-35|-5;20;30;0|-5;11;30;35|"
-    "-5;20;50;-35|-5;11;50;0|-5;15;50;35|"
-    "0;15;10;-35|0;20;10;0|0;11;10;35|"
-    "0;20;30;-35|0;11;30;0|0;15;30;35|"
-    "0;11;50;-35|0;15;50;0|0;20;50;35|"
-    "5;20;10;-35|5;11;10;0|5;15;10;35|"
-    "5;11;30;-35|5;15;30;0|5;20;30;35|"
-    "5;15;50;-35|5;20;50;0|5;11;50;35"
+    "-50;11;10;0|-50;30;10;45|-50;50;10;90|"
+    "-50;30;25;0|-50;50;25;45|-50;11;25;90|"
+    "-50;50;40;0|-50;11;40;45|-50;30;40;90|"
+    "0;30;10;0|0;50;10;45|0;11;10;90|"
+    "0;50;25;0|0;11;25;45|0;30;25;90|"
+    "0;11;40;0|0;30;40;45|0;50;40;90|"
+    "50;50;10;0|50;11;10;45|50;30;10;90|"
+    "50;11;25;0|50;30;25;45|50;50;25;90|"
+    "50;30;40;0|50;50;40;45|50;11;40;90"
 )
 STEP_TEST_REQUIRED_POSE_COUNT = 27
 STEP_TEST_DEFAULT_AMPLITUDES = "10"
@@ -144,21 +144,21 @@ STEP_TEST_DEFAULT_TIMEOUT_S = 25.0
 STEP_TEST_TICK_MS = 100
 STEP_TEST_J01_MIN_DEG = 0.0
 STEP_TEST_JOINT_LIMITS = {
-    0: (-15.0, 15.0),
-    1: (0.0, 30.0),
-    2: (0.0, 60.0),
-    3: (-45.0, 45.0),
+    0: (-60.0, 60.0),
+    1: (0.0, 60.0),
+    2: (0.0, 50.0),
+    3: (-10.0, 100.0),
 }
 SINE_TEST_DEFAULT_POSES = (
-    "-10;7;5;-40|-10;15;5;0|-10;23;5;40|"
-    "-10;15;30;-40|-10;23;30;0|-10;7;30;40|"
-    "-10;23;55;-40|-10;7;55;0|-10;15;55;40|"
-    "0;15;5;-40|0;23;5;0|0;7;5;40|"
-    "0;23;30;-40|0;7;30;0|0;15;30;40|"
-    "0;7;55;-40|0;15;55;0|0;23;55;40|"
-    "10;23;5;-40|10;7;5;0|10;15;5;40|"
-    "10;7;30;-40|10;15;30;0|10;23;30;40|"
-    "10;15;55;-40|10;23;55;0|10;7;55;40"
+    "-55;6;5;-5|-55;30;5;45|-55;55;5;95|"
+    "-55;30;25;-5|-55;55;25;45|-55;6;25;95|"
+    "-55;55;45;-5|-55;6;45;45|-55;30;45;95|"
+    "0;30;5;-5|0;55;5;45|0;6;5;95|"
+    "0;55;25;-5|0;6;25;45|0;30;25;95|"
+    "0;6;45;-5|0;30;45;45|0;55;45;95|"
+    "55;55;5;-5|55;6;5;45|55;30;5;95|"
+    "55;6;25;-5|55;30;25;45|55;55;25;95|"
+    "55;30;45;-5|55;55;45;45|55;6;45;95"
 )
 SINE_TEST_REQUIRED_POSE_COUNT = 27
 SINE_TEST_DEFAULT_AMPLITUDES = "5"
@@ -10878,7 +10878,7 @@ def run_protocol_selftest() -> None:
             for signed_amplitude in (-step_amplitudes[0], step_amplitudes[0])
         ]
         step_target_ranges.append((min(targets), max(targets)))
-    if step_target_ranges != [(-15.0, 15.0), (1.0, 30.0), (0.0, 60.0), (-45.0, 45.0)]:
+    if step_target_ranges != [(-60.0, 60.0), (1.0, 60.0), (0.0, 50.0), (-10.0, 100.0)]:
         raise AssertionError(f"unexpected step-test coverage: {step_target_ranges}")
     try:
         invalid_step_poses = list(step_poses)
@@ -10919,7 +10919,7 @@ def run_protocol_selftest() -> None:
             for signed_amplitude in (-sine_amplitudes[0], sine_amplitudes[0])
         ]
         sine_target_ranges.append((min(targets), max(targets)))
-    if sine_target_ranges != [(-15.0, 15.0), (2.0, 28.0), (0.0, 60.0), (-45.0, 45.0)]:
+    if sine_target_ranges != [(-60.0, 60.0), (1.0, 60.0), (0.0, 50.0), (-10.0, 100.0)]:
         raise AssertionError(f"unexpected sine-test coverage: {sine_target_ranges}")
     synthetic_sine = [
         (

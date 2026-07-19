@@ -1,0 +1,40 @@
+{
+  "transition_comparison": {
+    "20": {
+      "mean_abs_final_error_deg": 4.9825,
+      "peak_tension_n": 39.5
+    },
+    "40": {
+      "mean_abs_final_error_deg": 2.0747500000000008,
+      "peak_tension_n": 29.8
+    },
+    "60": {
+      "mean_abs_final_error_deg": 1.7615,
+      "peak_tension_n": 39.7
+    }
+  },
+  "same_pose_same_frequency_j01": {
+    "fd60": {
+      "rmse_deg": 1.880376169300023,
+      "amplitude_ratio": 0.8185620304929656,
+      "phase_lag_s": 0.6122359481177341,
+      "peak_tension_n": 26.3
+    },
+    "fd80": {
+      "rmse_deg": 0.9639100934432413,
+      "amplitude_ratio": 0.9755864046818242,
+      "phase_lag_s": 0.3432734843482841,
+      "peak_tension_n": 22.6
+    }
+  },
+  "recommendation": {
+    "default_counts": 80,
+    "reason": "best observed J01 tracking with safe measured tension; broad-pose FD80 validation remains incomplete",
+    "experiment_guard_tension_n": [
+      5,
+      80
+    ],
+    "host_hard_release_trigger_n": 90
+  },
+  "figure": "output\\control_autotune_20260719\\final_fd_selection\\fd_limit_comparison.png"
+}
